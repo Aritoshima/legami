@@ -156,3 +156,95 @@ Bei Seed 7 und 123 sind die Bestandszeilen identisch mit dem Skript vor der Erwe
 habe ich das mit dem alten Skript und demselben SQL-Vergleich: 18 von 18 Tabellen, 0 veränderte Zeilen. Der Vergleich
 mit der Bestands-DB und die Sollwerte 341/13 gelten nur für Seed 42. Deshalb hat die Qualitätsprüfung dort 50
 Prüfungen, bei anderen Seeds 47.
+
+## 8. Phase 3c – Schriftverkehr (Team B, 21.10.2026)
+
+### 8.1 Bestandsschutz
+
+- Neu sind nur die Tabellen `correspondence` (3.492 Schreiben bei Seed 42) und `correspondence_copies` (15 Kopien).
+  Bestehende Tabellen bekommen weder Zeilen noch Spalten.
+- Der Schriftverkehr ist Schritt 16, also der letzte Generierungsschritt. Er liest die übrigen Tabellen nur und rechnet in
+  einem eigenen Strom `random.Random(derived_seed(seed, "correspondence", "letters"))`. `world.rng` und die
+  Faker-Instanzen werden nicht benutzt. Namen stammen aus `employees`, Faker wird also nicht gebraucht.
+- Einzige Änderung an bestehendem Code: Die Strafformel aus `generate_financials` steht jetzt in
+  `contract_penalty_bookings()`. Beide Teile nutzen die Funktion, damit Strafbescheide und `contract_penalties`
+  dieselbe Formel haben. Reihenfolge und Arithmetik sind unverändert. `company_financials` ist bei allen drei Seeds
+  zeilengleich.
+- Ergebnis Seed 42: **115.705 von 115.705 Bestandszeilen unverändert** (18/18 Tabellen, automatische Prüfung). Zusätzlich
+  habe ich den kompletten Datenstand mit dem Skript aus Commit abefaa6 verglichen (alle 21 Tabellen, auch die der neuen
+  Firmen und die Rahmentabellen): Seed 42: 349.006 Zeilen, Seed 7: 397.139 Zeilen, Seed 123: 377.695 Zeilen,
+  jeweils **0 verändert**.
+
+### 8.2 Umfang (Seed 42)
+
+| Briefart | Anzahl | davon zwischen Bestandsfirmen |
+|---|---:|---:|
+| payment_reminder | 925 | 270 |
+| delay_notice | 377 | 135 |
+| contract_confirmation | 369 | 158 |
+| offer | 285 | 97 |
+| delay_complaint | 257 | 90 |
+| delivery_notice | 243 | 80 |
+| penalty_notice | 223 | 80 |
+| inquiry | 159 | 50 |
+| termination_notice | 156 | 50 |
+| internal_memo | 150 | 45 |
+| amendment_offer / _confirmation / _rejection | 87 / 71 / 1 | 47 / 39 / 1 |
+| counter_offer / offer_rejection | 47 / 15 | 19 / 8 |
+| rumor / confidential_tip | 46 / 27 | 14 / 9 |
+| breach_warning / protest / suspension_notice | 35 / 18 / 1 | 19 / 5 / 0 |
+| **Summe** | **3.492** | **1.216** |
+
+1.851 Schreiben sind deutsch, 1.641 englisch. 147 gehen an Nicht-Firmenkunden (Mahnungen). 293 sind vertraulich,
+28 davon sind geleakt (Original mit `leaked_by`). 56 waren zum Stichtag ungelesen. 825 Schreiben zwischen
+Bestandsfirmen beziehen sich auf Bestandsverträge. Alle 223 gebrochenen Verträge haben einen Strafbescheid,
+zusammen 17.290.739,49 CR. Das entspricht in allen 164 Firmenmonaten `company_financials.contract_penalties`.
+
+Größe und Laufzeit: Seed 42 44,5 MB (42,4 MiB, Ausgabe des Skripts), Seed 7 49,7 MB (47,4 MiB), Seed 123 48,0 MB
+(45,8 MiB). Laufzeit ≈ 15 s. Der Schriftverkehr selbst braucht etwa 0,8 s und rund 2,8 MiB. Seed 7 liegt damit knapp
+unter 50 MB (dezimal). Wenn noch mehr Daten dazukommen, bleibt die Stellschraube aus 5.3: ein längeres
+Preisintervall nur für Erweiterungsware.
+
+### 8.3 Abweichungen vom Plan (`correspondence_design`, Entscheidung 6.3) und Gründe
+
+| Punkt | Plan | Umsetzung | Grund |
+|---|---|---|---|
+| Spaltennamen | `reference_number`, `letter_type`, `tone` | `correspondence_number`, `correspondence_type`, `sentiment` (`positive/neutral/negative/hostile`) | Auftrag Phase 3c |
+| Vertraulichkeit | `public/business/confidential/secret` | `public/internal/confidential` plus `min_intel_access_level` 0–3 | Auftrag Phase 3c. `business` → `internal`. `secret` → `confidential` mit Stufe 3 (Vorstand oder Tipp) |
+| Neue Felder | – | `channel` (`letter/email/encrypted_message/holo_call`), `direction` (`seller_to_buyer/buyer_to_seller/internal/to_rival/lateral`), `is_read`, `storyline_code` (V1–V41) | Auftrag Phase 3c; Vorgangscode für Spielautoren und QA |
+| Nachträge | FK auf `framework_amendments` | FK auf `framework_agreement_amendments` | Tabellenname von Team A |
+| Kopien | – | Hilfstabelle `correspondence_copies` (cc/bcc/forward) | z. B. V31, V39 (cc Esther Bauer), Rahmenbestätigungen |
+| Bestätigung Rahmen | Unterschrift (Vorstände) | Verhandlung (Anfrage, Angebot, 0–2 Gegenangebote) zwischen Beginn − 60 T und der Unterzeichnung (Beginn − 30 T), Bestätigung am Vertragsstart | Die Einstellungsgrenzen der neuen Firmen (Δ8) gelten ab Beginn − 60 T. Bestätigung „zum Vertragsstart“ laut Auftrag |
+| V7, V17, V18, V22 | Angebot/Gegenangebot nach der Unterzeichnung | vorgezogen auf 2058-06-12/06-22, 2059-02-18, 2059-02-16, 2059-06-18. Die Bestätigungen bleiben am Vertragsstart (08-01, 04-01, 04-01, 08-01). | Team A unterzeichnet 30 Tage vor Beginn. Eine Verhandlung nach der Unterschrift ist unlogisch. |
+| V3 | Bestätigung 2058-03-01 | 2058-02-17 (`signed_date` von CCI-MSA-2057-01/A1) | Bestätigung immer am Unterzeichnungstag des Nachtrags |
+| V9 | Antwort 2058-10-05 mit Storno LAK-VTR-2058-0039 | Antwort 2058-10-14 (nach Beginn von -0039), Ankündigung, -0039 auslaufen zu lassen. Die Kündigung folgt nach dem letzten Abruf (2059-03-03). | Laut Daten wurde -0039 bis März 2059 beliefert |
+| V21 | 8 Geleitschutzbrüche | 7 bis 2059-06-10 | EKM-VTR-2059-0167 bricht erst im Oktober 2059 |
+| V22 | Schulden 22,94 / 24,22 Mio. CR | berechnet je Schreiben: 2059-06-18 11 Rechnungen 22,94 Mio., 2059-08-01 aus den Daten | Angebot vorgezogen, siehe oben |
+| V26 | Gerücht Hines → Gould | `internal_memo` (vertraulich, verweist auf den Tipp von Osborne) | beide Driftwood; firmenintern ist nur `internal_memo` zulässig |
+| V36 | Briefart `inquiry` | `inquiry` mit `amendment_id` = GFW-RV-2057-01/N4 als Angebot des Nachtrags | Der Nachtrag ist am 2059-12-31 angeboten |
+| Volumen | 2.200–2.800 | 3.492 (Seed 7: 3.608, Seed 123: 3.717) | Jede Mahnstufe (Fälligkeit +3..7/+21/+45 T) ist ein eigenes Schreiben; Nicht-Firmenkunden nur als Stichprobe (25 %) |
+| Bezüge auf Auslöseverträge | – | Nachtragsschreiben nennen den Auslöser im Text, aber nicht als FK | Auslöser beginnen meist erst nach dem Nachtrag („kein Schreiben vor seinem Bezugsobjekt“) |
+
+Alle Personen der Vorgänge V1–V41 sind bei Seed 42 am Versandtag beschäftigt und gehören zur richtigen Firma. Ersatz
+nach Rolle war nicht nötig. Bei anderen Seeds werden die verankerten Vorgänge nicht erzeugt (gleiche Nummern, andere
+Objekte), der regelbasierte Schriftverkehr entsteht wie bei Seed 42.
+
+### 8.4 Neue Qualitätsprüfungen (12 bei Seed 42, 11 bei anderen Seeds)
+
+Seed 42: 62/62, Seed 7: 58/58, Seed 123: 58/58. Geprüft werden:
+
+1. Menge, Briefarten, Firmen, Bestandsbezug.
+2. Nummer, Sprache und Werte.
+3. Absender, Empfänger und Kopien gehören zur Firma und sind am Versandtag beschäftigt.
+4. Gesprächsfäden.
+5. Bezugsobjekte passen zu den Parteien.
+6. Kein Schreiben vor seinem Bezugsobjekt.
+7. Strafformel und Monatssummen = `contract_penalties`.
+8. Mahnstufen.
+9. Verzugsbeschwerden nur bei echter Verspätung.
+10. Rahmen und Nachträge vollständig belegt.
+11. Leck-Regel.
+12. V1–V41 umgesetzt (nur Seed 42).
+
+Die Prüfungen schlagen an: Ein Test mit absichtlich verfälschter Datenbank (Strafbetrag +1 CR, falsche Sprache, fremder
+Absender, gelöschte Nachtragsbestätigung, falscher Leck-Mitarbeiter) ließ jeweils die passende Prüfung fehlschlagen.

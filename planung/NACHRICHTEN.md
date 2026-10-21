@@ -125,3 +125,31 @@ Qualitätsprüfung: Seed 42 50/50, Seed 7 47/47, Seed 123 47/47 (Bestandsverglei
   (Liste in `bestandsvergleich.md`, Abschnitt 6). Bei den Bestandspaaren gibt es keine Abweichung.
 - Neue Ereignisse (IDs 75–255) entstehen an neuen Stationen und wirken nur auf Ware neuer Firmen. Die Bezüge auf
   Bestandsereignisse (z. B. 19, 36, 70, 74) gelten unverändert.
+
+## Phase 3c – Team B: Schriftverkehr im Generator fertig (21.10.2026)
+Dateien: `generate_space_trading_data.py` (Schritt „16. Schriftverkehr“), `planung/bestandsvergleich.md` (Abschnitt 8).
+Qualitätsprüfung: Seed 42 **62/62**, Seed 7 **58/58**, Seed 123 **58/58** (12 bzw. 11 neue Prüfungen). Größe
+44,5 / 49,7 / 48,0 MB (Skriptausgabe 42,4 / 47,4 / 45,8 MiB). Laufzeit ≈ 15 s. Auch mit Python 3.11 getestet,
+gleiche Ausgabe.
+- Neue Tabellen `correspondence` (3.492 Schreiben bei Seed 42, 20 Briefarten, Kanäle letter/email/encrypted_message/
+  holo_call) und `correspondence_copies` (cc/bcc/forward). FKs auf Firmen, Mitarbeiter, Stationen, Kunden,
+  Vereinbarungen, Rivalitäten, Rahmen, Nachträge (`framework_agreement_amendments`), Verträge, Bestellungen,
+  Lieferungen und Ereignisse. Gesprächsfäden über `thread_id`/`in_reply_to_id`, Leckquellen über
+  `refers_to_correspondence_id`. Spaltennamen nach Auftrag (`correspondence_number`, `correspondence_type`,
+  `sentiment`, `confidentiality` public/internal/confidential plus `min_intel_access_level`). Die Zuordnung zum Plan
+  steht in `bestandsvergleich.md` 8.3.
+- Bestandsschutz: eigener Strom `derived_seed(seed, "correspondence", "letters")`, letzter Schritt, nur lesend.
+  115.705/115.705 Bestandszeilen unverändert. Gegen den Stand von abefaa6 sind bei Seed 42, 7 und 123 alle 21 Tabellen
+  zeilengleich. Die Strafformel steht jetzt in `contract_penalty_bookings()` und wird von `generate_financials`
+  mitbenutzt (Werte unverändert).
+- Regeln: Rahmenverhandlung zwischen Beginn − 60 T und Unterzeichnung, Bestätigung am Vertragsstart; Nachtragsangebot
+  am `proposed_date` vom Initiator, Bestätigung am `signed_date` von der Gegenseite; Strafbescheid Käufer → Verkäufer
+  (letzte Ankunft + 3..14 T, Summe je Firma/Monat = `contract_penalties`); Mahnstufen +3..7/+21/+45 T; Verzugsbeschwerde
+  nur bei > 48 h, Bruch oder `delayed`; Lecks vertraulicher Schreiben nach der Formel aus `correspondence_design` (gedämpft),
+  Tipp/Gerücht an die Marktaufklärung des Rivalen.
+- V1–V41 sind bei Seed 42 alle umgesetzt (100 Schreiben, `storyline_code`), alle Personen gültig. Angepasst wurden:
+  V7/V17/V18/V22 (Verhandlung vor die Unterzeichnung = Beginn − 30 T gezogen), V3 (Bestätigung am signed_date 02-17),
+  V9 (Antwort 10-14, Storno -0039 erst nach dem letzten Abruf), V21 (7 statt 8 Brüche bis 06-10), V26 (Hines → Gould als
+  interne Notiz). Bei anderen Seeds gibt es keine verankerten Vorgänge.
+- AN TEAM A: Seed 7 liegt mit 49,7 MB (dezimal) knapp unter 50 MB. Wenn noch Daten dazukommen, bitte zuerst das
+  Preisintervall der Erweiterungsware strecken (euer Vorschlag aus 5.3).

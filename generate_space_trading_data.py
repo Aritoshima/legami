@@ -37,6 +37,19 @@ werden aus den Einzelverträgen abgeleitet (erster Abruf einer Kategorie, kumuli
 sie nutzen. `framework_agreement_scope` hält das Sortiment mit Gültigkeitszeiträumen,
 `contracts.framework_agreement_id` die Zuordnung der Einzelverträge.
 
+Schriftverkehr
+--------------
+`correspondence` hält einige tausend Schreiben zwischen den Firmen (und an Nicht-Firmenkunden): Anfragen,
+Angebote und Gegenangebote vor der Unterzeichnung eines Rahmens, Bestätigungen zum Vertragsstart, Nachtragsangebote
+und -bestätigungen an den Daten der Nachträge, Lieferavise, Verzögerungsmeldungen, Verzugsbeschwerden,
+Strafbescheide (gleiche Strafformel wie die Finanzdaten), Mahnstufen, Abmahnungen, Kündigungen, Aussetzungen,
+Proteste unter Rivalen, interne Notizen sowie vertrauliche Tipps und Gerüchte. Vertrauliche Schreiben sind
+Spionageziele: Mitarbeiter mit hoher Bestechlichkeit oder geringer Loyalität verraten sie an Rivalen.
+Absender und Empfänger sind Mitarbeiter der jeweiligen Firma, die am Versandtag beschäftigt sind; der Text steht in
+der Sprache der Absenderfirma. `correspondence_copies` hält Kopienempfänger. Der Schriftverkehr entsteht als letzter
+Schritt in einem eigenen Zufallsstrom und liest die übrigen Tabellen nur; bei Seed 42 sind zusätzlich die
+verankerten Vorgänge V1–V41 aus der Planung mit echten Bestandsobjekten umgesetzt.
+
 Aufruf
 ------
     pip install faker pandas
@@ -2101,13 +2114,14 @@ PRIMARY_KEYS: dict[str, str] = {
     "employees": "employee_id", "events": "event_id", "event_effects": "event_effect_id",
     "company_financials": "financial_id", "framework_agreements": "framework_agreement_id",
     "framework_agreement_amendments": "amendment_id", "framework_agreement_scope": "scope_id",
+    "correspondence": "correspondence_id", "correspondence_copies": "copy_id",
 }
 
 INSERT_ORDER: tuple[str, ...] = (
     "companies", "star_systems", "stations", "products", "trade_partnerships", "company_rivalries",
     "framework_agreements", "trade_routes", "inventory", "contracts", "customers", "orders", "order_items",
     "shipments", "price_history", "employees", "events", "event_effects", "company_financials",
-    "framework_agreement_amendments", "framework_agreement_scope",
+    "framework_agreement_amendments", "framework_agreement_scope", "correspondence", "correspondence_copies",
 )
 
 
@@ -2142,6 +2156,7 @@ class World:
     targets: dict[int, dict[str, int]] = field(default_factory=dict)
     frameworks: dict[tuple[int, int], dict[str, Any]] = field(default_factory=dict)
     extension_fakers: dict[str, Faker] = field(default_factory=dict)
+    correspondence_notes: list[str] = field(default_factory=list)
 
     def add(self, table: str, row: dict[str, Any]) -> dict[str, Any]:
         """Fügt eine Zeile mit fortlaufender ID hinzu und gibt sie zurück."""
@@ -4583,17 +4598,9 @@ def generate_financials(world: World) -> None:
     shipped["logistics"] = shipped["fuel_cost"] + shipped["insurance_cost"]
     logistics = shipped.groupby(["company_id", "period"])["logistics"].sum()
 
-    breached = contracts[contracts["status"] == "breached"]
     penalties: dict[tuple[int, str], float] = defaultdict(float)
-    order_by_contract = orders.dropna(subset=["contract_id"]).merge(shipments[["order_id", "actual_arrival_date"]],
-                                                                   on="order_id")
-    for contract in breached.itertuples():
-        arrivals = order_by_contract[order_by_contract["contract_id"] == contract.contract_id]["actual_arrival_date"]
-        # Noch verspätet unterwegs: Strafe läuft bis zum Stichtag auf
-        last_arrival = (GAME_REFERENCE_DATETIME - timedelta(days=1) if arrivals.isna().any()
-                        else datetime.fromisoformat(arrivals.max()))
-        late_days = max(0, (last_arrival.date() - date.fromisoformat(contract.deadline)).days)
-        penalties[(contract.company_id, last_arrival.strftime("%Y-%m"))] += late_days * contract.penalty_per_day
+    for booking in contract_penalty_bookings(contracts, orders, shipments):
+        penalties[(booking["company_id"], booking["period"])] += booking["amount"]
 
     for company_id, company in world.companies.items():
         upkeep = sum(s["monthly_upkeep"] for s in world.stations_by_company[company_id])
@@ -4628,6 +4635,2462 @@ def generate_financials(world: World) -> None:
                 "cash_balance": round(cash, 2),
             })
             month = shift_months(month, 1)
+
+
+# ---------------------------------------------------------------------------
+# 16. Schriftverkehr
+# ---------------------------------------------------------------------------
+
+CORRESPONDENCE_TYPES: tuple[str, ...] = (
+    "inquiry", "offer", "counter_offer", "offer_rejection", "contract_confirmation", "amendment_offer",
+    "amendment_confirmation", "amendment_rejection", "delivery_notice", "delay_notice", "delay_complaint",
+    "penalty_notice", "payment_reminder", "breach_warning", "termination_notice", "suspension_notice", "protest",
+    "confidential_tip", "rumor", "internal_memo",
+)
+CORRESPONDENCE_CHANNELS = ("letter", "email", "encrypted_message", "holo_call")
+CORRESPONDENCE_DIRECTIONS = ("seller_to_buyer", "buyer_to_seller", "internal", "to_rival", "lateral")
+CONFIDENTIALITY_LEVELS: dict[str, int] = {"public": 0, "internal": 1, "confidential": 2}
+SENTIMENTS = ("positive", "neutral", "negative", "hostile")
+CORRESPONDENCE_STATUSES = ("sent", "read", "answered", "rejected", "escalated", "closed")
+CORRESPONDENCE_PREFIX = {"de_DE": "KOR", "en_US": "COR"}
+COPY_TYPES = ("cc", "bcc", "forward")
+
+# Briefarten ohne Parteienregel (Bezugsobjekt muss nur eine der beiden Firmen betreffen)
+EXEMPT_PARTY_TYPES: frozenset[str] = frozenset({"confidential_tip", "rumor", "internal_memo", "protest"})
+# Verhandlungsschreiben dürfen vor dem Beginn ihres Vertrags bzw. vor der Unterzeichnung des Rahmens liegen
+NEGOTIATION_TYPES: frozenset[str] = frozenset({"inquiry", "offer", "counter_offer", "offer_rejection"})
+EXECUTIVE_PENALTY_THRESHOLD = 250_000.0  # darüber zeichnet der Vorstand, sonst die Finanzbuchhaltung
+LATE_COMPLAINT_HOURS = 48.0  # Verzugsbeschwerde ab 48 h Verspätung einer Abruflieferung
+REMINDER_STAGE_DAYS: tuple[tuple[int, int], ...] = ((3, 7), (21, 21), (45, 45))  # nach Fälligkeit (K3–K5)
+DELIVERY_NOTICE_MIN_AMOUNT = 3_000_000.0  # Lieferavis für große Abrufe
+LEAK_SCALE = 0.50  # dämpft die Leckformel auf eine spielbare Menge vertraulicher Tipps
+RUMOR_TRUTH_SPLIT: dict[int | None, float] = {1: 0.3, None: 0.5, 0: 0.2}
+
+SENTIMENT_BY_TYPE: dict[str, str] = {
+    "inquiry": "neutral", "offer": "positive", "counter_offer": "neutral", "offer_rejection": "negative",
+    "contract_confirmation": "positive", "amendment_offer": "neutral", "amendment_confirmation": "positive",
+    "amendment_rejection": "negative", "delivery_notice": "neutral", "delay_notice": "negative",
+    "delay_complaint": "negative", "penalty_notice": "negative", "payment_reminder": "neutral",
+    "breach_warning": "negative", "termination_notice": "negative", "suspension_notice": "hostile",
+    "protest": "hostile", "confidential_tip": "neutral", "rumor": "neutral", "internal_memo": "neutral",
+}
+TRUST_EFFECTS: dict[str, tuple[int, int]] = {
+    "inquiry": (0, 2), "offer": (1, 3), "counter_offer": (-1, 1), "offer_rejection": (-4, -1),
+    "contract_confirmation": (3, 6), "amendment_offer": (0, 2), "amendment_confirmation": (2, 4),
+    "amendment_rejection": (-5, -2), "delivery_notice": (0, 1), "delay_notice": (-2, 0),
+    "delay_complaint": (-5, -2), "penalty_notice": (-9, -4), "payment_reminder": (-3, -1),
+    "breach_warning": (-10, -5), "termination_notice": (-12, -6), "suspension_notice": (-16, -10),
+    "protest": (-18, -10), "confidential_tip": (0, 0), "rumor": (-2, 0), "internal_memo": (0, 0),
+}
+CORRESPONDENCE_ROLE_ORDER: dict[str, tuple[str, ...]] = {
+    "executive": ("executive", "relations", "station_manager"),
+    "relations": ("relations", "executive", "station_manager"),
+    "finance": ("finance", "relations", "executive"),
+    "intelligence": ("intelligence", "relations", "executive"),
+    "logistics": ("logistics", "station_manager", "relations", "executive"),
+    "station": ("station_manager", "logistics", "relations", "executive"),
+}
+TYPE_LABELS: dict[str, tuple[str, str]] = {
+    "inquiry": ("Anfrage", "Inquiry"), "offer": ("Angebot", "Offer"),
+    "counter_offer": ("Gegenangebot", "Counter-offer"), "offer_rejection": ("Absage", "Rejection"),
+    "contract_confirmation": ("Vertragsbestätigung", "Contract confirmation"),
+    "amendment_offer": ("Nachtragsangebot", "Amendment proposal"),
+    "amendment_confirmation": ("Bestätigung Nachtrag", "Amendment confirmation"),
+    "amendment_rejection": ("Ablehnung Nachtrag", "Amendment rejected"),
+    "delivery_notice": ("Lieferavis", "Delivery notice"), "delay_notice": ("Verzögerungsmeldung", "Delay notice"),
+    "delay_complaint": ("Verzugsbeschwerde", "Delay complaint"),
+    "penalty_notice": ("Vertragsstrafenbescheid", "Penalty notice"),
+    "payment_reminder": ("Mahnung", "Payment reminder"),
+    "breach_warning": ("Abmahnung", "Breach warning"), "termination_notice": ("Kündigung", "Termination notice"),
+    "suspension_notice": ("Aussetzung", "Suspension notice"), "protest": ("Protest", "Protest"),
+    "confidential_tip": ("Vertraulicher Hinweis", "Confidential tip"), "rumor": ("Gerücht", "Rumour"),
+    "internal_memo": ("Interne Notiz", "Internal memo"),
+}
+SEVERITY_LABELS: dict[str, tuple[str, str]] = {
+    "minor": ("gering", "minor"), "moderate": ("mittel", "moderate"), "major": ("schwer", "major"),
+    "critical": ("kritisch", "critical"),
+}
+REMINDER_LABELS: tuple[tuple[str, str], ...] = (
+    ("Zahlungserinnerung", "Payment reminder"), ("2. Mahnung", "Second reminder"),
+    ("Letzte Mahnung", "Final reminder"))
+
+# Verankerte Vorgänge V1–V41 (phase2_entscheidung.md, Abschnitt 6.3); gelten nur bei Seed 42
+STORYLINE_CODES: tuple[str, ...] = tuple(f"V{n}" for n in range(1, 42))
+
+
+def satisfies_leak_rule(employee: dict[str, Any]) -> bool:
+    """Leck-Regel: bestechlich (≥ 50) oder wenig loyal (≤ 50)."""
+    return employee["bribe_susceptibility"] >= 50 or employee["loyalty"] <= 50
+
+
+def employed_on(employee: dict[str, Any], day: str) -> bool:
+    """Am Tag (ISO-Datum) beschäftigt: eingestellt und nicht vorher ausgeschieden."""
+    return employee["hire_date"] <= day and (employee["termination_date"] is None or employee["termination_date"] > day)
+
+
+def contract_penalty_bookings(contracts: pd.DataFrame, orders: pd.DataFrame,
+                              shipments: pd.DataFrame) -> list[dict[str, Any]]:
+    """Vertragsstrafen gebrochener Verträge (Formel aus generate_financials, gleiche Reihenfolge).
+
+    Strafe = Verzugstage × penalty_per_day; Verzugstage zählen von der Frist bis zur letzten Ankunft eines
+    Abrufs. Ist ein Abruf noch unterwegs, läuft die Strafe bis zum Vortag des Stichtags auf. Gebucht wird beim
+    Verkäufer (`company_id`) im Monat der letzten Ankunft.
+    """
+    breached = contracts[contracts["status"] == "breached"]
+    order_by_contract = orders.dropna(subset=["contract_id"]).merge(shipments[["order_id", "actual_arrival_date"]],
+                                                                   on="order_id")
+    bookings = []
+    for contract in breached.itertuples():
+        arrivals = order_by_contract[order_by_contract["contract_id"] == contract.contract_id]["actual_arrival_date"]
+        # Noch verspätet unterwegs: Strafe läuft bis zum Stichtag auf
+        in_transit = bool(arrivals.isna().any())
+        last_arrival = (GAME_REFERENCE_DATETIME - timedelta(days=1) if in_transit
+                        else datetime.fromisoformat(arrivals.max()))
+        late_days = max(0, (last_arrival.date() - date.fromisoformat(contract.deadline)).days)
+        bookings.append({"contract_id": int(contract.contract_id), "company_id": contract.company_id,
+                         "period": last_arrival.strftime("%Y-%m"), "late_days": late_days,
+                         "penalty_per_day": contract.penalty_per_day, "amount": late_days * contract.penalty_per_day,
+                         "last_arrival": last_arrival, "in_transit": in_transit})
+    return bookings
+
+
+@dataclass
+class Letter:
+    """Ein Schreiben während der Generierung (IDs und Nummern werden zum Schluss chronologisch vergeben)."""
+
+    key: int
+    sent_at: datetime
+    letter_type: str
+    sender_company_id: int
+    sender_employee_id: int | None
+    recipient_company_id: int | None
+    recipient_employee_id: int | None
+    recipient_customer_id: int | None
+    subject: str
+    body: str
+    channel: str
+    direction: str
+    confidentiality: str
+    min_intel_access_level: int
+    sentiment: str
+    refs: dict[str, int | None]
+    amount: float | None = None
+    due_date: str | None = None
+    response_required: int = 0
+    trust_effect: int = 0
+    is_accurate: int | None = None
+    intel_value: int = 0
+    reply_to: int | None = None
+    thread: int | None = None
+    refers_to: int | None = None
+    leak_status: str = "none"
+    leaked_by: int | None = None
+    leaked_to: int | None = None
+    storyline: str | None = None
+    copies: list[tuple[int, str]] = field(default_factory=list)
+
+
+UNIT_LABELS_BY_TEXT: dict[str, tuple[str, str]] = {label: labels for labels in UNIT_LABELS.values() for label in labels}
+REFERENCE_KEYS = ("partnership_id", "rivalry_id", "framework_agreement_id", "amendment_id", "contract_id", "order_id",
+                  "shipment_id", "event_id")
+
+
+class CorrespondenceDesk:
+    """Erzeugt den Schriftverkehr im eigenen Zufallsstrom und hält die Nachschlage-Indizes dafür.
+
+    Der Strom ist aus (Seed, "correspondence") abgeleitet; der gemeinsame Strom `world.rng` und die
+    Faker-Instanzen werden nicht benutzt. Bestehende Tabellen werden nur gelesen.
+    """
+
+    def __init__(self, world: World) -> None:
+        self.world = world
+        self.rng = random.Random(derived_seed(world.seed, "correspondence", "letters"))
+        self.letters: list[Letter] = []
+        self.by_key: dict[int, Letter] = {}
+        self.claimed: set[tuple[Any, ...]] = set()
+        self.adaptations: list[str] = []
+        rows = world.rows
+        self.employees = {e["employee_id"]: e for e in rows["employees"]}
+        self.staff: dict[int, list[dict[str, Any]]] = defaultdict(list)
+        for employee in rows["employees"]:
+            self.staff[employee["company_id"]].append(employee)
+        self.contracts = {c["contract_id"]: c for c in rows["contracts"]}
+        self.contract_by_number = {c["contract_number"]: c for c in rows["contracts"]}
+        self.orders = {o["order_id"]: o for o in rows["orders"]}
+        self.order_by_number = {o["order_number"]: o for o in rows["orders"]}
+        self.orders_by_contract: dict[int, list[dict[str, Any]]] = defaultdict(list)
+        for order in rows["orders"]:
+            if order["contract_id"] is not None:
+                self.orders_by_contract[order["contract_id"]].append(order)
+        self.items_by_order: dict[int, list[dict[str, Any]]] = defaultdict(list)
+        for item in rows["order_items"]:
+            self.items_by_order[item["order_id"]].append(item)
+        self.shipment_by_order = {s["order_id"]: s for s in rows["shipments"]}
+        self.shipment_by_number = {s["shipment_number"]: s for s in rows["shipments"]}
+        self.events = {e["event_id"]: e for e in rows["events"]}
+        self.frameworks = {f["framework_agreement_id"]: f for f in rows["framework_agreements"]}
+        self.framework_by_number = {f["agreement_number"]: f for f in rows["framework_agreements"]}
+        self.amendments = {a["amendment_id"]: a for a in rows["framework_agreement_amendments"]}
+        self.amendment_by_number = {a["amendment_number"]: a for a in rows["framework_agreement_amendments"]}
+        self.scope = rows["framework_agreement_scope"]
+        self.partnerships = {p["partnership_id"]: p for p in rows["trade_partnerships"]}
+        self.active_pair = {(p["company_id"], p["partner_company_id"]): p for p in rows["trade_partnerships"]
+                            if p["is_active"]}
+        self.rivalries = {r["rivalry_id"]: r for r in rows["company_rivalries"]}
+        self.rivalries_of: dict[int, list[dict[str, Any]]] = defaultdict(list)
+        for rivalry in rows["company_rivalries"]:
+            self.rivalries_of[rivalry["company_id"]].append(rivalry)
+            self.rivalries_of[rivalry["rival_company_id"]].append(rivalry)
+        self.customers = {c["customer_id"]: c for c in rows["customers"]}
+        self.penalties = {b["contract_id"]: b for b in contract_penalty_bookings(
+            pd.DataFrame(rows["contracts"]), pd.DataFrame(rows["orders"]), pd.DataFrame(rows["shipments"]))}
+
+    # -- Grunddaten -------------------------------------------------------------------------------------
+    def lang(self, company_id: int) -> str:
+        """Sprache einer Firma."""
+        return self.world.language(company_id)
+
+    def name(self, company_id: int) -> str:
+        """Firmenname."""
+        return self.world.companies[company_id]["name"]
+
+    def station_name(self, station_id: int) -> str:
+        """Stationsname."""
+        return self.world.stations[station_id]["name"]
+
+    def product_label(self, product_id: int) -> str:
+        """Produktname (Eigenname in der Sprache des Herstellers)."""
+        return self.world.products[product_id]["name"]
+
+    def unit(self, product_id: int, language: str) -> str:
+        """Mengeneinheit in der Briefsprache."""
+        unit = self.world.products[product_id]["unit"]
+        labels = UNIT_LABELS_BY_TEXT.get(unit)
+        return labels[lang_index(language)] if labels else unit
+
+    def money(self, value: float, language: str) -> str:
+        """Betrag mit Währung."""
+        return f"{fmt_number(value, language, 2)} {CURRENCY_CODE}"
+
+    def day_text(self, value: date | datetime | str, language: str) -> str:
+        """Datum für Fließtext."""
+        if isinstance(value, str):
+            value = date.fromisoformat(value[:10])
+        if isinstance(value, datetime):
+            value = value.date()
+        return fmt_human_date(value, language)
+
+    def event_label(self, event: dict[str, Any], language: str) -> str:
+        """Ereignis mit Typ, Station und Datum."""
+        event_type = EVENT_TYPES[event["event_type"]]
+        label = event_type.label_de if language == "de_DE" else event_type.label_en
+        station, day = self.station_name(event["station_id"]), self.day_text(event["event_date"], language)
+        return f"{label} an {station} am {day}" if language == "de_DE" else f"{label} at {station} on {day}"
+
+    def contract_line(self, contract: dict[str, Any], language: str) -> str:
+        """Kurzbeschreibung eines Vertrags."""
+        product = contract["product_id"]
+        quantity = fmt_number(contract["quantity"], language)
+        if language == "de_DE":
+            return (f"{contract['contract_number']} über {quantity} {self.unit(product, language)} "
+                    f"{self.product_label(product)} von {self.station_name(contract['origin_station_id'])} nach "
+                    f"{self.station_name(contract['destination_station_id'])}")
+        return (f"{contract['contract_number']} for {quantity} {self.unit(product, language)} of "
+                f"{self.product_label(product)} from {self.station_name(contract['origin_station_id'])} to "
+                f"{self.station_name(contract['destination_station_id'])}")
+
+    def order_line(self, order: dict[str, Any], language: str) -> str:
+        """Kurzbeschreibung einer Bestellung (erste Position)."""
+        items = self.items_by_order[order["order_id"]]
+        item = items[0]
+        more = len(items) - 1
+        quantity = fmt_number(item["quantity"], language)
+        product = item["product_id"]
+        text = f"{order['order_number']} ({quantity} {self.unit(product, language)} {self.product_label(product)}"
+        if more:
+            text += f" u. a., {more + 1} Positionen" if language == "de_DE" else f" and more, {more + 1} lines"
+        return text + ")"
+
+    # -- Personen -----------------------------------------------------------------------------------------
+    def pick(self, company_id: int, moment: datetime, role: str, station_id: int | None = None,
+             salt: int = 0) -> dict[str, Any] | None:
+        """Ansprechpartner einer Firma am Versandtag (stabil je Gegenüber über `salt`)."""
+        day = fmt_date(moment)
+        for role_code in CORRESPONDENCE_ROLE_ORDER[role]:
+            pool = [e for e in self.staff[company_id] if e["role_code"] == role_code and employed_on(e, day)]
+            if station_id is not None and role_code in ("station_manager", "logistics"):
+                pool = [e for e in pool if e["station_id"] == station_id]
+            if pool:
+                return pool[salt % len(pool)]
+        pool = [e for e in self.staff[company_id] if e["intel_access_level"] >= 2 and employed_on(e, day)]
+        return pool[salt % len(pool)] if pool else None
+
+    def person(self, employee_id: int | None, company_id: int, moment: datetime, role: str,
+               station_id: int | None = None, salt: int = 0, note: str = "") -> dict[str, Any] | None:
+        """Vorgegebene Person (verankerter Vorgang) prüfen; sonst Ersatz nach Rolle (wird dokumentiert)."""
+        employee = self.employees.get(employee_id) if employee_id is not None else None
+        if employee is not None and employee["company_id"] == company_id and employed_on(employee, fmt_date(moment)):
+            return employee
+        replacement = self.pick(company_id, moment, role, station_id, salt)
+        if employee_id is not None and note:
+            self.adaptations.append(f"{note}: Mitarbeiter {employee_id} am {fmt_date(moment)} nicht verfügbar, ersetzt "
+                                    f"durch {replacement['employee_id'] if replacement else '–'}")
+        return replacement
+
+    # -- Zeit -------------------------------------------------------------------------------------------------
+    def at(self, day: date, earliest: datetime | None = None) -> datetime | None:
+        """Versandzeitpunkt im Bürobetrieb am Tag, nie vor `earliest` und immer vor dem Stichtag."""
+        moment = datetime(day.year, day.month, day.day, 8, 0) + timedelta(minutes=self.rng.randint(0, 600))
+        if earliest is not None and moment <= earliest:
+            moment = earliest + timedelta(minutes=self.rng.randint(20, 180))
+        if moment >= GAME_REFERENCE_DATETIME:
+            if earliest is None or earliest + timedelta(minutes=2) >= GAME_REFERENCE_DATETIME:
+                return None
+            moment = earliest + timedelta(minutes=1)
+        return moment.replace(second=0, microsecond=0)
+
+    # -- Schreiben anlegen ----------------------------------------------------------------------------------
+    def compose(self, language: str, recipient_name: str | None, paragraphs: list[str], sender: dict[str, Any],
+                channel: str, moment: datetime) -> str:
+        """Fließtext mit Anrede, Absätzen und Schlussformel in der Briefsprache."""
+        company = self.name(sender["company_id"])
+        de = language == "de_DE"
+        first = paragraphs[0]
+        if not de or channel == "holo_call":  # deutsche Briefe beginnen nach der Anrede klein (außer Substantiven)
+            paragraphs = [first[:1].upper() + first[1:], *paragraphs[1:]]
+        if channel == "holo_call":
+            head = (f"Gesprächsnotiz zum Holo-Ruf vom {self.day_text(moment, language)}, {moment:%H:%M} Uhr"
+                    if de else f"Call note, holo call on {self.day_text(moment, language)} at {moment:%H:%M}")
+            partner = (f" mit {recipient_name}" if de else f" with {recipient_name}") if recipient_name else ""
+            signature = f"{sender['full_name']}, {sender['role']}, {company}"
+            return f"{head}{partner}.\n\n" + "\n\n".join(paragraphs) + f"\n\n{signature}"
+        if channel == "encrypted_message":
+            head = ("[Verschlüsselte Nachricht – nur für den Empfänger]" if de
+                    else "[Encrypted message – recipient only]")
+            greeting = f"{recipient_name}," if recipient_name else ""
+            return f"{head}\n\n{greeting}\n\n" + "\n\n".join(paragraphs) + f"\n\n– {sender['full_name']}"
+        if recipient_name:
+            greeting = f"Guten Tag {recipient_name}," if de else f"Dear {recipient_name},"
+        else:
+            greeting = "Sehr geehrte Damen und Herren," if de else "Dear Sir or Madam,"
+        closing = "Mit freundlichen Grüßen" if de else "Kind regards"
+        return (f"{greeting}\n\n" + "\n\n".join(paragraphs)
+                + f"\n\n{closing}\n{sender['full_name']}\n{sender['role']}, {company}")
+
+    def channel_for(self, letter_type: str, confidentiality: str, amount: float | None) -> str:
+        """Übertragungsweg nach Briefart, Vertraulichkeit und Betrag."""
+        rng = self.rng
+        if letter_type in ("confidential_tip", "rumor"):
+            return "encrypted_message" if rng.random() < 0.75 else "holo_call"
+        if letter_type == "counter_offer":
+            return "holo_call" if rng.random() < 0.45 else "email"
+        if letter_type in ("termination_notice", "suspension_notice", "contract_confirmation", "protest"):
+            return "letter"
+        if letter_type == "penalty_notice":
+            return "letter" if (amount or 0) > EXECUTIVE_PENALTY_THRESHOLD else "email"
+        if letter_type == "internal_memo":
+            return "encrypted_message" if confidentiality == "confidential" else "email"
+        if confidentiality == "confidential":
+            return "letter" if rng.random() < 0.6 else "encrypted_message"
+        if letter_type == "payment_reminder":
+            return "letter" if rng.random() < 0.5 else "email"
+        if letter_type in ("delivery_notice", "delay_notice"):
+            return "email"
+        return "email" if rng.random() < 0.85 else "holo_call"
+
+    def add(self, *, moment: datetime | None, letter_type: str, sender: dict[str, Any] | None,
+            recipient: dict[str, Any] | None = None, recipient_company_id: int | None = None,
+            customer: dict[str, Any] | None = None, subject: str, paragraphs: list[str], direction: str,
+            confidentiality: str = "internal", refs: dict[str, int | None] | None = None,
+            amount: float | None = None, due_date: str | None = None, response_required: int = 0,
+            reply_to: Letter | None = None, thread: Letter | None = None, refers_to: Letter | None = None,
+            is_accurate: int | None = None, leaked_by: int | None = None, leaked_to: int | None = None,
+            storyline: str | None = None, sentiment: str | None = None, channel: str | None = None,
+            claim: tuple[Any, ...] | None = None, copies: list[tuple[int, str]] | None = None) -> Letter | None:
+        """Legt ein Schreiben an (Sprache = Absenderfirma); liefert None, wenn es nicht zulässig wäre."""
+        if moment is None or sender is None or (recipient is None and customer is None):
+            return None
+        if reply_to is not None and reply_to.sender_company_id == sender["company_id"]:
+            thread, reply_to = reply_to, None  # eigenes Folgeschreiben: gleicher Vorgang, keine Antwort
+        if thread is not None and moment <= thread.sent_at:
+            moment = thread.sent_at + timedelta(minutes=self.rng.randint(30, 240))
+        if reply_to is not None and moment <= reply_to.sent_at:
+            moment = reply_to.sent_at + timedelta(minutes=self.rng.randint(30, 240))
+        if moment >= GAME_REFERENCE_DATETIME:
+            return None
+        sender_company = sender["company_id"]
+        if recipient is not None:
+            recipient_company_id = recipient["company_id"]
+        language = self.lang(sender_company)
+        channel = channel or self.channel_for(letter_type, confidentiality, amount)
+        recipient_name = recipient["full_name"] if recipient is not None else customer["contact_name"]
+        body = self.compose(language, recipient_name, paragraphs, sender, channel, moment)
+        level = CONFIDENTIALITY_LEVELS[confidentiality]
+        roles = (sender["role_code"], (recipient or {}).get("role_code"))
+        if confidentiality == "confidential" and ("executive" in roles or letter_type in ("confidential_tip", "rumor")):
+            level = 3
+        low, high = TRUST_EFFECTS[letter_type]
+        intel = {"public": (0, 8), "internal": (10, 35), "confidential": (40, 75)}[confidentiality]
+        intel_value = self.rng.randint(*intel) + (min(20, int(math.log10(amount + 1) * 2)) if amount else 0)
+        if letter_type in ("confidential_tip", "rumor"):
+            intel_value += 10
+        letter = Letter(
+            key=len(self.letters) + 1, sent_at=moment, letter_type=letter_type, sender_company_id=sender_company,
+            sender_employee_id=sender["employee_id"], recipient_company_id=recipient_company_id,
+            recipient_employee_id=recipient["employee_id"] if recipient is not None else None,
+            recipient_customer_id=customer["customer_id"] if customer is not None else None,
+            subject=subject, body=body, channel=channel, direction=direction, confidentiality=confidentiality,
+            min_intel_access_level=level, sentiment=sentiment or SENTIMENT_BY_TYPE[letter_type],
+            refs={key: (refs or {}).get(key) for key in REFERENCE_KEYS},
+            amount=round(amount, 2) if amount is not None else None,
+            due_date=due_date, response_required=response_required, trust_effect=self.rng.randint(low, high),
+            is_accurate=is_accurate, intel_value=int(clamp(intel_value, 0, 100)),
+            reply_to=reply_to.key if reply_to else None,
+            thread=(reply_to.thread if reply_to else (thread.thread if thread else None)),
+            refers_to=refers_to.key if refers_to else None, leaked_by=leaked_by, leaked_to=leaked_to,
+            storyline=storyline, copies=list(copies or []))
+        if letter.thread is None:
+            letter.thread = letter.key
+        self.letters.append(letter)
+        self.by_key[letter.key] = letter
+        if claim is not None:
+            self.claimed.add(claim)
+        return letter
+
+    def subject(self, letter_type: str, language: str, detail: str) -> str:
+        """Betreff aus Briefart und Bezug."""
+        return f"{TYPE_LABELS[letter_type][lang_index(language)]}: {detail}"
+
+    # -- Rahmenverträge -----------------------------------------------------------------------------------
+    def framework_terms(self, framework: dict[str, Any], language: str) -> str:
+        """Eckdaten eines Rahmenvertrags in der Briefsprache."""
+        idx = lang_index(language)
+        fid = framework["framework_agreement_id"]
+        categories = sorted({e["category_code"] for e in self.scope if e["framework_agreement_id"] == fid
+                             and e["entry_kind"] == "include" and e["valid_from"] <= framework["start_date"]})
+        scope_text = ", ".join(CATEGORY_LABELS[c][idx] for c in categories) or "–"
+        index_code = framework["price_index_category"]
+        index_category = CATEGORY_LABELS[index_code][idx] if index_code else ""
+        index_label = INDEXATION_LABELS[framework["indexation"]][idx].format(category=index_category)
+        pct = framework["cost_plus_pct"]
+        if pct is None:
+            pct = framework["base_discount_pct"] or 0
+        formula = PRICE_FORMULA_TEXTS[framework["price_formula"]][idx].format(
+            index=index_label, cap=fmt_number(framework["adjustment_cap_pct"] or 5, language),
+            pct=fmt_number(pct, language))
+        exclusivity = EXCLUSIVITY_LABELS[framework["exclusivity"]][idx]
+        start = self.day_text(framework["start_date"], language)
+        volume = self.money(framework["base_volume"], language)
+        if idx == 0:
+            return (f"Sortiment: {scope_text}. Laufzeit {framework['term_months']} Monate ab {start}, Rahmenvolumen "
+                    f"{volume}. Preisbildung: {formula}. Exklusivität: {exclusivity}. Kündigungsfrist "
+                    f"{framework['notice_period_days']} Tage.")
+        return (f"Scope: {scope_text}. Term {framework['term_months']} months from {start}, framework volume {volume}. "
+                f"Pricing: {formula}. Exclusivity: {exclusivity}. Notice period {framework['notice_period_days']} "
+                "days.")
+
+    def framework_refs(self, framework: dict[str, Any], **extra: int | None) -> dict[str, int | None]:
+        """Bezüge eines Rahmenschreibens."""
+        return {"framework_agreement_id": framework["framework_agreement_id"],
+                "partnership_id": framework["partnership_id"], **extra}
+
+    def framework_letter(self, framework: dict[str, Any], letter_type: str, moment: datetime | None,
+                         sender: dict[str, Any] | None, recipient: dict[str, Any] | None, *,
+                         reply_to: Letter | None = None, extra: list[str] | None = None,
+                         storyline: str | None = None, claim: tuple[Any, ...] | None = None) -> Letter | None:
+        """Verhandlungs- oder Bestätigungsschreiben zu einem Rahmenvertrag."""
+        if sender is None or recipient is None or moment is None:
+            return None
+        language = self.lang(sender["company_id"])
+        de = language == "de_DE"
+        number, title = framework["agreement_number"], framework["title"]
+        seller = framework["company_id"]
+        from_seller = sender["company_id"] == seller
+        terms = self.framework_terms(framework, language)
+        partner = self.name(recipient["company_id"])
+        if letter_type == "inquiry":
+            text = ("für die kommenden Jahre möchten wir unsere Abrufe bei Ihnen in einem Rahmenvertrag bündeln. "
+                    f"Bitte senden Sie uns ein Angebot für „{title}“ (Arbeitsnummer {number})." if de else
+                    "we would like to bundle our future call-offs with you in a framework agreement. Please send us "
+                    f"an offer for “{title}” (working number {number}).")
+            paragraphs = [text]
+        elif letter_type == "offer":
+            paragraphs = [(f"gern unterbreiten wir der {partner} unser Angebot zum Rahmenvertrag {number} „{title}“."
+                           if de else f"We are pleased to offer {partner} the framework agreement {number} “{title}”."),
+                          terms]
+        elif letter_type == "counter_offer":
+            if from_seller:
+                text = (f"Ihre Rückmeldung zu {number} haben wir geprüft. Am Preisgerüst halten wir fest, kommen Ihnen "
+                        "aber beim Zahlungsziel (45 statt 30 Tage) und bei den Abrufmengen entgegen." if de else
+                        f"We have reviewed your feedback on {number}. We keep the pricing, but offer 45 instead of 30 "
+                        "days payment terms and more flexible call-off quantities.")
+            else:
+                text = (f"zu Ihrem Angebot {number} schlagen wir vor: Kündigungsfrist und Vertragsstrafe bleiben, "
+                        f"dafür bitten wir um {fmt_number(self.rng.choice((1.5, 2.0, 2.5, 3.0)), language, 1)} % "
+                        "Nachlass auf die Listenpreise der ersten zwölf Monate." if de else
+                        f"regarding your offer {number}, we propose to keep notice period and penalty clause, but ask "
+                        f"for a {fmt_number(self.rng.choice((1.5, 2.0, 2.5, 3.0)), language, 1)}% discount on list "
+                        "prices for the first twelve months.")
+            paragraphs = [text]
+        else:  # contract_confirmation zum Vertragsstart
+            signed = self.day_text(framework["signed_date"], language)
+            start = self.day_text(framework["start_date"], language)
+            paragraphs = [(f"mit dem heutigen Tag beginnt der am {signed} unterzeichnete Rahmenvertrag {number} "
+                           f"„{title}“. Wir bestätigen die vereinbarten Bedingungen:" if de else
+                           f"today the framework agreement {number} “{title}”, signed on {signed}, takes effect "
+                           f"({start}). We confirm the agreed terms:"), terms]
+        paragraphs += extra or []
+        direction = "seller_to_buyer" if from_seller else "buyer_to_seller"
+        confidentiality = "confidential" if letter_type in ("offer", "counter_offer") else "internal"
+        return self.add(moment=moment, letter_type=letter_type, sender=sender, recipient=recipient,
+                        subject=self.subject(letter_type, language, f"{number} – {title}"), paragraphs=paragraphs,
+                        direction=direction, confidentiality=confidentiality, refs=self.framework_refs(framework),
+                        amount=framework["base_volume"] if letter_type == "offer" else None,
+                        response_required=int(letter_type in ("inquiry", "offer", "counter_offer")),
+                        reply_to=reply_to, storyline=storyline, claim=claim)
+
+    def framework_thread(self, framework: dict[str, Any]) -> None:
+        """Anfrage → Angebot → 0–2 Gegenangebote vor der Unterzeichnung, Bestätigung zum Vertragsstart."""
+        fid = framework["framework_agreement_id"]
+        seller, buyer = framework["company_id"], framework["partner_company_id"]
+        signed = date.fromisoformat(framework["signed_date"])
+        last: Letter | None = None
+        if ("fw_thread", fid) not in self.claimed:
+            day = signed - timedelta(days=self.rng.randint(24, 30))  # frühestens Beginn − 60 T (Einstellungsgrenzen)
+            moment = self.at(day)
+            buyer_contact = self.pick(buyer, moment, "relations", salt=seller)
+            seller_contact = self.pick(seller, moment, "relations", salt=buyer)
+            last = self.framework_letter(framework, "inquiry", moment, buyer_contact, seller_contact,
+                                         claim=("fw_thread", fid))
+            day += timedelta(days=self.rng.randint(3, 6))
+            moment = self.at(day)
+            last = self.framework_letter(framework, "offer", moment, self.pick(seller, moment, "executive"),
+                                         buyer_contact, reply_to=last) or last
+            trust = self.partnerships[framework["partnership_id"]]["trust_level"]
+            rounds = 2 if trust < 60 else self.rng.choice((0, 1, 1))
+            for round_no in range(rounds):
+                day += timedelta(days=self.rng.randint(3, 6))
+                if day >= signed - timedelta(days=1) or last is None:
+                    break
+                moment = self.at(day)
+                side, other = (buyer, seller) if round_no % 2 == 0 else (seller, buyer)
+                sender = self.pick(side, moment, "relations", salt=other)
+                recipient = self.person(last.sender_employee_id, other, moment, "relations", salt=side)
+                counter = self.framework_letter(framework, "counter_offer", moment, sender, recipient, reply_to=last)
+                last = counter or last
+        if ("fw_confirm", fid) not in self.claimed:
+            start = date.fromisoformat(framework["start_date"])
+            if start >= GAME_REFERENCE_DATE:
+                return
+            moment = self.at(start)
+            sender = self.person(framework["buyer_signatory_id"], buyer, moment, "executive")
+            recipient = self.person(framework["seller_signatory_id"], seller, moment, "executive")
+            copies = [(e["employee_id"], "cc") for e in (self.pick(buyer, moment, "relations", salt=seller),)
+                      if e is not None and sender is not None and e["employee_id"] != sender["employee_id"]]
+            letter = self.framework_letter(framework, "contract_confirmation", moment, sender, recipient,
+                                           reply_to=last, claim=("fw_confirm", fid))
+            if letter is not None:
+                letter.copies += copies
+
+    # -- Nachträge ------------------------------------------------------------------------------------------
+    def amendment_summary(self, amendment: dict[str, Any], language: str) -> str:
+        """Inhalt eines Nachtrags (Vorlage AMENDMENT_TEXTS) in der Briefsprache."""
+        idx = lang_index(language)
+        aid = amendment["amendment_id"]
+        entries = [e for e in self.scope if aid in (e["added_by_amendment_id"], e["removed_by_amendment_id"])]
+        codes = [(e["category_code"], e["archetype_code"]) for e in entries]
+        if not codes and (amendment["category_code"] or amendment["archetype_code"]):
+            codes = [(amendment["category_code"], amendment["archetype_code"])]
+        names = []
+        for category, archetype in dict.fromkeys(codes):
+            if archetype:
+                names.append(getattr(ARCHETYPES_BY_CODE[archetype], "name_de" if idx == 0 else "name_en"))
+            elif category:
+                names.append(CATEGORY_LABELS[category][idx])
+        joiner = " und " if idx == 0 else " and "
+        items = joiner.join([", ".join(names[:-1]), names[-1]]) if len(names) > 1 else (names[0] if names else "")
+        system_id = amendment["exclusive_system_id"]
+        system_name = self.world.systems_by_id[system_id]["name"] if system_id else ""
+        system_suffix = ((f" im System {system_name}" if idx == 0 else f" in the {system_name} system")
+                         if system_name else "")
+        trigger = ""
+        if amendment["trigger_contract_id"]:
+            contract = self.contracts[amendment["trigger_contract_id"]]
+            note = "rule" if amendment["rule"] else "anchor"
+            trigger = AMENDMENT_RULE_NOTES[amendment["rule"] if note == "rule" else "anchor"][idx].format(
+                contract=contract["contract_number"])
+        escort = amendment["escort_company_id"]
+        pct = amendment["price_change_pct"]
+        return AMENDMENT_TEXTS[amendment["amendment_type"]][idx].format(
+            effective=self.day_text(amendment["effective_date"], language),
+            before=fmt_number(amendment["volume_before"] or 0, language),
+            after=fmt_number(amendment["volume_after"] or 0, language),
+            items=items or ("das gesamte Sortiment" if idx == 0 else "the entire scope"),
+            items_suffix=((" für " if idx == 0 else " for ") + items) if items else "",
+            pct=fmt_number(pct, language, 1) if pct is not None else "0",
+            end=self.day_text(amendment["end_date_new"], language) if amendment["end_date_new"] else "",
+            exclusivity=EXCLUSIVITY_LABELS[amendment["exclusivity"] or "right_of_first_refusal"][idx],
+            system_suffix=system_suffix, escort=self.name(escort) if escort else "", trigger=trigger)
+
+    def amendment_letters(self, amendment: dict[str, Any], *, offer_sender: int | None = None,
+                          offer_recipient: int | None = None, reply_sender: int | None = None,
+                          reply_recipient: int | None = None, offer_type: str | None = None,
+                          extra_offer: list[str] | None = None, extra_reply: list[str] | None = None,
+                          thread: Letter | None = None, refers_to: Letter | None = None,
+                          refs: dict[str, int | None] | None = None,
+                          storyline: str | None = None) -> tuple[Letter | None, Letter | None]:
+        """Angebot des Initiators am Angebotsdatum; Bestätigung (Unterzeichnung) oder Ablehnung der Gegenseite."""
+        aid = amendment["amendment_id"]
+        framework = self.frameworks[amendment["framework_agreement_id"]]
+        seller, buyer = framework["company_id"], framework["partner_company_id"]
+        initiator = amendment["initiated_by_company_id"]
+        other = buyer if initiator == seller else seller
+        kind = amendment["amendment_type"]
+        heavy = kind in ("suspension", "partial_termination")
+        letter_type = offer_type or {"suspension": "suspension_notice",
+                                     "partial_termination": "termination_notice"}.get(kind, "amendment_offer")
+        confidentiality = ("confidential" if kind in ("price_adjustment", "suspension", "partial_termination",
+                                                      "volume_reduction", "exclusivity_clause", "exclusivity_waiver",
+                                                      "escort_clause", "confidentiality_clause") else "internal")
+        offer = reply = None
+        # Auslösende Verträge beginnen oft erst nach dem Nachtrag: sie stehen im Text, nicht als Bezug
+        refs = {**self.framework_refs(framework, amendment_id=aid, event_id=amendment["trigger_event_id"]),
+                **(refs or {})}
+        if ("amend_offer", aid) not in self.claimed:
+            moment = self.at(date.fromisoformat(amendment["proposed_date"]))
+            sender = self.person(offer_sender, initiator, moment, "executive" if heavy else "relations", salt=other,
+                                 note=f"{storyline or amendment['amendment_number']} Angebot")
+            recipient = self.person(offer_recipient, other, moment, "executive" if heavy else "relations",
+                                    salt=initiator, note=f"{storyline or amendment['amendment_number']} Angebot")
+            if sender is not None and recipient is not None:
+                language = self.lang(initiator)
+                de = language == "de_DE"
+                summary = self.amendment_summary(amendment, language)
+                head = (f"zum Rahmenvertrag {framework['agreement_number']} schlagen wir den Nachtrag "
+                        f"{amendment['amendment_number']} vor:" if de else
+                        f"for framework agreement {framework['agreement_number']} we propose amendment "
+                        f"{amendment['amendment_number']}:")
+                if letter_type == "suspension_notice":
+                    head = (f"hiermit setzen wir den Rahmenvertrag {framework['agreement_number']} aus (Nachtrag "
+                            f"{amendment['amendment_number']}):" if de else
+                            f"we hereby suspend framework agreement {framework['agreement_number']} (amendment "
+                            f"{amendment['amendment_number']}):")
+                elif letter_type == "termination_notice":
+                    head = (f"hiermit kündigen wir den Rahmenvertrag {framework['agreement_number']} teilweise "
+                            f"(Nachtrag {amendment['amendment_number']}, Kündigungsfrist "
+                            f"{framework['notice_period_days']} Tage):" if de else
+                            f"we hereby give partial notice on framework agreement {framework['agreement_number']} "
+                            f"(amendment {amendment['amendment_number']}, notice period "
+                            f"{framework['notice_period_days']} days):")
+                effective = self.day_text(amendment["effective_date"], language)
+                ask = (f"Wir bitten um Gegenzeichnung bis zum {effective}." if de else
+                       f"Please countersign by {effective}.")
+                paragraphs = [head, summary, *(extra_offer or []), ask]
+                direction = "seller_to_buyer" if initiator == seller else "buyer_to_seller"
+                volume = None
+                if amendment["volume_after"] is not None and amendment["volume_before"] is not None:
+                    volume = abs(amendment["volume_after"] - amendment["volume_before"])
+                offer = self.add(moment=moment, letter_type=letter_type, sender=sender, recipient=recipient,
+                                 subject=self.subject(letter_type, language,
+                                                      f"{amendment['amendment_number']} ({framework['title']})"),
+                                 paragraphs=paragraphs, direction=direction, confidentiality=confidentiality,
+                                 refs=refs, amount=volume, response_required=1, thread=thread, refers_to=refers_to,
+                                 storyline=storyline, claim=("amend_offer", aid))
+        if ("amend_reply", aid) in self.claimed or amendment["status"] == "proposed":
+            return offer, None
+        if amendment["status"] == "signed":
+            day = date.fromisoformat(amendment["signed_date"])
+            reply_type = "amendment_confirmation"
+        else:
+            day = date.fromisoformat(amendment["proposed_date"]) + timedelta(days=self.rng.randint(3, 9))
+            day = min(day, date.fromisoformat(amendment["effective_date"]), GAME_REFERENCE_DATE - timedelta(days=1))
+            reply_type = "amendment_rejection"
+        moment = self.at(day, earliest=offer.sent_at if offer else None)
+        if moment is None:
+            return offer, None
+        sender = self.person(reply_sender, other, moment, "executive" if heavy else "relations", salt=initiator,
+                             note=f"{storyline or amendment['amendment_number']} Antwort")
+        original = self.employees.get(offer.sender_employee_id) if offer else None
+        recipient = self.person(reply_recipient or (original["employee_id"] if original else None), initiator, moment,
+                                "relations", salt=other, note=f"{storyline or amendment['amendment_number']} Antwort")
+        if sender is None or recipient is None:
+            return offer, None
+        language = self.lang(other)
+        de = language == "de_DE"
+        if reply_type == "amendment_confirmation":
+            text = (f"wir zeichnen den Nachtrag {amendment['amendment_number']} zum Rahmenvertrag "
+                    f"{framework['agreement_number']} gegen; er wird am "
+                    f"{self.day_text(amendment['effective_date'], language)} wirksam." if de else
+                    f"we countersign amendment {amendment['amendment_number']} to framework agreement "
+                    f"{framework['agreement_number']}; it takes effect on "
+                    f"{self.day_text(amendment['effective_date'], language)}.")
+        else:
+            text = (f"den Nachtrag {amendment['amendment_number']} zum Rahmenvertrag {framework['agreement_number']} "
+                    "lehnen wir ab. Die bisherigen Bedingungen gelten unverändert weiter." if de else
+                    f"we decline amendment {amendment['amendment_number']} to framework agreement "
+                    f"{framework['agreement_number']}. The existing terms remain in force.")
+        reply = self.add(moment=moment, letter_type=reply_type, sender=sender, recipient=recipient,
+                         subject=self.subject(reply_type, language, amendment["amendment_number"]),
+                         paragraphs=[text, *(extra_reply or [])],
+                         direction="seller_to_buyer" if other == seller else "buyer_to_seller",
+                         confidentiality=confidentiality, refs=refs, reply_to=offer,
+                         thread=thread if offer is None else None, storyline=storyline, claim=("amend_reply", aid))
+        return offer, reply
+
+    # -- Einzelverträge ---------------------------------------------------------------------------------------
+    def contract_refs(self, contract: dict[str, Any], **extra: int | None) -> dict[str, int | None]:
+        """Bezüge eines Vertragsschreibens (Vertrag, Rahmen, Vereinbarung)."""
+        partnership = self.active_pair.get((contract["company_id"], contract["partner_company_id"]))
+        return {"contract_id": contract["contract_id"], "framework_agreement_id": contract["framework_agreement_id"],
+                "partnership_id": partnership["partnership_id"] if partnership else None, **extra}
+
+    def contract_confirmation(self, contract: dict[str, Any]) -> None:
+        """Vertragsbestätigung des Verkäufers zum Vertragsstart (Exklusivlieferungen und große Abrufverträge)."""
+        cid = contract["contract_id"]
+        start = date.fromisoformat(contract["start_date"])
+        if ("contract_confirm", cid) in self.claimed or start >= GAME_REFERENCE_DATE:
+            return
+        seller, buyer = contract["company_id"], contract["partner_company_id"]
+        moment = self.at(start)
+        sender = self.pick(seller, moment, "relations", salt=buyer)
+        recipient = self.pick(buyer, moment, "relations", salt=seller)
+        language = self.lang(seller)
+        de = language == "de_DE"
+        line = self.contract_line(contract, language)
+        deadline = self.day_text(contract["deadline"], language)
+        text = (f"wir bestätigen den heute beginnenden Vertrag {line}. Liefertermin ist der {deadline}, vereinbart "
+                f"sind {self.money(contract['agreed_price_per_unit'], language)} je Einheit, Gesamtwert "
+                f"{self.money(contract['total_value'], language)}. Bei Verzug fallen "
+                f"{self.money(contract['penalty_per_day'], language)} je Tag an." if de else
+                f"we confirm contract {line}, starting today. Delivery is due by {deadline} at "
+                f"{self.money(contract['agreed_price_per_unit'], language)} per unit, total value "
+                f"{self.money(contract['total_value'], language)}. Late delivery incurs "
+                f"{self.money(contract['penalty_per_day'], language)} per day.")
+        paragraphs = [text]
+        if contract["framework_agreement_id"]:
+            number = self.frameworks[contract["framework_agreement_id"]]["agreement_number"]
+            paragraphs.append(f"Der Vertrag wird auf den Rahmenvertrag {number} angerechnet." if de else
+                              f"The contract counts against framework agreement {number}.")
+        self.add(moment=moment, letter_type="contract_confirmation", sender=sender, recipient=recipient,
+                 subject=self.subject("contract_confirmation", language, contract["contract_number"]),
+                 paragraphs=paragraphs, direction="seller_to_buyer", refs=self.contract_refs(contract),
+                 amount=contract["total_value"], claim=("contract_confirm", cid))
+
+    def contract_offer(self, contract: dict[str, Any], *, day: date | None = None, sender_id: int | None = None,
+                       recipient_id: int | None = None, inquiry: bool = False, storyline: str | None = None,
+                       extra: list[str] | None = None) -> Letter | None:
+        """Angebot zu einem Vertrag (Entwürfe 2060, Stichprobe der Spotverträge mit vorheriger Anfrage)."""
+        cid = contract["contract_id"]
+        if ("contract_offer", cid) in self.claimed:
+            return None
+        seller, buyer = contract["company_id"], contract["partner_company_id"]
+        start = date.fromisoformat(contract["start_date"])
+        first: Letter | None = None
+        if inquiry:
+            moment = self.at(start - timedelta(days=self.rng.randint(5, 12)))
+            asker = self.pick(buyer, moment, "station", station_id=contract["destination_station_id"], salt=seller)
+            answerer = self.pick(seller, moment, "relations", salt=buyer)
+            language = self.lang(buyer)
+            de = language == "de_DE"
+            product = self.product_label(contract["product_id"])
+            text = (f"wir benötigen kurzfristig {fmt_number(contract['quantity'], language)} "
+                    f"{self.unit(contract['product_id'], language)} {product} für "
+                    f"{self.station_name(contract['destination_station_id'])}, Lieferung bis "
+                    f"{self.day_text(contract['deadline'], language)}. Bitte nennen Sie uns Preis und "
+                    "Termin." if de else
+                    f"we need {fmt_number(contract['quantity'], language)} "
+                    f"{self.unit(contract['product_id'], language)} of {product} for "
+                    f"{self.station_name(contract['destination_station_id'])} at short notice, delivery by "
+                    f"{self.day_text(contract['deadline'], language)}. Please quote price and date.")
+            first = self.add(moment=moment, letter_type="inquiry", sender=asker, recipient=answerer,
+                             subject=self.subject("inquiry", language, product),
+                             paragraphs=[text],
+                             direction="buyer_to_seller", confidentiality="public",
+                             refs={"partnership_id": self.contract_refs(contract)["partnership_id"]},
+                             response_required=1)
+            if first is None:
+                return None
+            day = (first.sent_at + timedelta(days=self.rng.randint(1, 3))).date()
+            if day >= start:
+                day = start - timedelta(days=1)
+        if day is None:
+            latest = min(start - timedelta(days=7), GAME_REFERENCE_DATE - timedelta(days=1))
+            earliest = max(latest - timedelta(days=50), date(2059, 9, 1))
+            day = random_date(self.rng, min(earliest, latest), latest)
+        moment = self.at(day, earliest=first.sent_at if first else None)
+        sender = (self.person(sender_id, seller, moment, "relations", salt=buyer, note=storyline or "Angebot")
+                  if moment else None)
+        if moment is None:
+            recipient = None
+        elif first is not None:
+            recipient = self.person(first.sender_employee_id, buyer, moment, "station", salt=seller)
+        else:
+            recipient = self.person(recipient_id, buyer, moment, "relations", salt=seller, note=storyline or "Angebot")
+        language = self.lang(seller)
+        de = language == "de_DE"
+        line = self.contract_line(contract, language)
+        text = (f"wir bieten Ihnen den Vertrag {line} an: {self.money(contract['agreed_price_per_unit'], language)} je "
+                f"Einheit, Gesamtwert {self.money(contract['total_value'], language)}, Beginn "
+                f"{self.day_text(contract['start_date'], language)}, Liefertermin "
+                f"{self.day_text(contract['deadline'], language)}." if de else
+                f"we offer you contract {line}: {self.money(contract['agreed_price_per_unit'], language)} per unit, "
+                f"total value {self.money(contract['total_value'], language)}, start "
+                f"{self.day_text(contract['start_date'], language)}, delivery by "
+                f"{self.day_text(contract['deadline'], language)}.")
+        offer = self.add(moment=moment, letter_type="offer", sender=sender, recipient=recipient,
+                         subject=self.subject("offer", language, contract["contract_number"]),
+                         paragraphs=[text, *(extra or [])], direction="seller_to_buyer",
+                         refs=self.contract_refs(contract), amount=contract["total_value"], response_required=1,
+                         reply_to=first, storyline=storyline, claim=("contract_offer", cid))
+        return offer
+
+    def offer_reply(self, offer: Letter, contract: dict[str, Any], letter_type: str, *, day: date | None = None,
+                    sender_id: int | None = None, storyline: str | None = None,
+                    extra: list[str] | None = None) -> Letter | None:
+        """Gegenangebot oder Absage des Käufers auf ein Vertragsangebot."""
+        buyer = contract["partner_company_id"]
+        day = day or (offer.sent_at + timedelta(days=self.rng.randint(2, 8))).date()
+        moment = self.at(day, earliest=offer.sent_at)
+        if moment is None:
+            return None
+        sender = self.person(sender_id or offer.recipient_employee_id, buyer, moment, "relations",
+                             salt=contract["company_id"], note=storyline or "Antwort")
+        recipient = self.person(offer.sender_employee_id, contract["company_id"], moment, "relations", salt=buyer)
+        language = self.lang(buyer)
+        de = language == "de_DE"
+        number = contract["contract_number"]
+        if letter_type == "counter_offer":
+            pct = fmt_number(self.rng.choice((3, 4, 5, 6, 8)), language)
+            text = (f"zu Ihrem Angebot {number}: Menge und Termin passen, beim Preis erwarten wir {pct} % weniger."
+                    if de else f"regarding your offer {number}: quantity and date work for us, but we expect a price "
+                               f"{pct}% lower.")
+        else:
+            text = (f"vielen Dank für Ihr Angebot {number}. Wir nehmen es derzeit nicht an." if de else
+                    f"thank you for your offer {number}. We will not accept it at this time.")
+        return self.add(moment=moment, letter_type=letter_type, sender=sender, recipient=recipient,
+                        subject=self.subject(letter_type, language, number),
+                        paragraphs=[text, *(extra or [])], direction="buyer_to_seller",
+                        confidentiality="confidential" if letter_type == "counter_offer" else "internal",
+                        refs=self.contract_refs(contract), reply_to=offer, storyline=storyline,
+                        response_required=int(letter_type == "counter_offer"))
+
+    def contract_activity_end(self, contract: dict[str, Any]) -> datetime | None:
+        """Letzter Abflug bzw. letzte Ankunft der nicht stornierten Abrufe eines Vertrags."""
+        moments = []
+        for order in self.orders_by_contract[contract["contract_id"]]:
+            if order["status"] == "cancelled":
+                continue
+            moments.append(datetime.fromisoformat(order["order_date"]))
+            shipment = self.shipment_by_order.get(order["order_id"])
+            if shipment:
+                moments.append(datetime.fromisoformat(shipment["actual_arrival_date"] or shipment["arrival_date"]))
+        return max(moments) if moments else None
+
+    def contract_termination(self, contract: dict[str, Any], *, sender_side: int | None = None,
+                             storyline: str | None = None, extra: list[str] | None = None) -> Letter | None:
+        """Kündigung (Storno) eines Vertrags nach dem letzten Abruf, innerhalb der Laufzeit."""
+        cid = contract["contract_id"]
+        if ("termination", cid) in self.claimed:
+            return None
+        start = to_datetime(date.fromisoformat(contract["start_date"]))
+        activity = self.contract_activity_end(contract)
+        earliest = max(start, activity) if activity else start
+        latest = min(to_datetime(date.fromisoformat(contract["deadline"])) + timedelta(days=1), GAME_REFERENCE_DATETIME)
+        if earliest + timedelta(days=1) >= latest:
+            return None
+        day = random_date(self.rng, (earliest + timedelta(days=1)).date(), (latest - timedelta(days=1)).date())
+        moment = self.at(day, earliest=earliest)
+        side = sender_side or self.rng.choice((contract["company_id"], contract["partner_company_id"]))
+        other = contract["partner_company_id"] if side == contract["company_id"] else contract["company_id"]
+        sender = self.pick(side, moment, "relations", salt=other) if moment else None
+        recipient = self.pick(other, moment, "relations", salt=side) if moment else None
+        language = self.lang(side)
+        de = language == "de_DE"
+        line = self.contract_line(contract, language)
+        text = (f"hiermit kündigen wir den Vertrag {line} zum heutigen Tag. Offene Restmengen werden nicht mehr "
+                "abgerufen; bereits gelieferte Mengen rechnen wir wie vereinbart ab." if de else
+                f"we hereby terminate contract {line} with immediate effect. Remaining quantities will not be called "
+                "off; quantities already delivered are invoiced as agreed.")
+        return self.add(moment=moment, letter_type="termination_notice", sender=sender, recipient=recipient,
+                        subject=self.subject("termination_notice", language, contract["contract_number"]),
+                        paragraphs=[text, *(extra or [])],
+                        direction="seller_to_buyer" if side == contract["company_id"] else "buyer_to_seller",
+                        refs=self.contract_refs(contract), storyline=storyline, claim=("termination", cid))
+
+    # -- Lieferungen ------------------------------------------------------------------------------------------
+    def shipment_refs(self, order: dict[str, Any], shipment: dict[str, Any]) -> dict[str, int | None]:
+        """Bezüge eines Lieferschreibens."""
+        contract = self.contracts.get(order["contract_id"]) if order["contract_id"] else None
+        refs = self.contract_refs(contract) if contract else {
+            "partnership_id": (self.active_pair.get((order["company_id"], order["customer_company_id"])) or {}).get(
+                "partnership_id")}
+        return {**refs, "order_id": order["order_id"], "shipment_id": shipment["shipment_id"]}
+
+    def delay_hours(self, shipment: dict[str, Any]) -> float:
+        """Verspätung gegenüber der geplanten Ankunft (bei noch offenen Lieferungen bis zum Stichtag)."""
+        planned = datetime.fromisoformat(shipment["arrival_date"])
+        actual = (datetime.fromisoformat(shipment["actual_arrival_date"]) if shipment["actual_arrival_date"]
+                  else max(GAME_REFERENCE_DATETIME, planned))
+        return (actual - planned).total_seconds() / 3600
+
+    def delivery_notice(self, order: dict[str, Any], *, day: date | None = None, sender_id: int | None = None,
+                        recipient_id: int | None = None, storyline: str | None = None) -> Letter | None:
+        """Lieferavis des Verkäufers beim Abflug."""
+        shipment = self.shipment_by_order[order["order_id"]]
+        if ("delivery", shipment["shipment_id"]) in self.claimed:
+            return None
+        departure = datetime.fromisoformat(shipment["departure_date"])
+        moment = (self.at(day, earliest=departure) if day else
+                  departure + timedelta(minutes=self.rng.randint(30, 360)))
+        if moment is None or moment >= GAME_REFERENCE_DATETIME:
+            return None
+        seller, buyer = order["company_id"], order["customer_company_id"]
+        sender = self.person(sender_id, seller, moment, "logistics", station_id=order["origin_station_id"], salt=buyer,
+                             note=storyline or "Lieferavis")
+        recipient = self.person(recipient_id, buyer, moment, "station", station_id=order["destination_station_id"],
+                                salt=seller, note=storyline or "Lieferavis")
+        language = self.lang(seller)
+        de = language == "de_DE"
+        eta = self.day_text(shipment["arrival_date"], language)
+        text = (f"die Lieferung {shipment['shipment_number']} zur Bestellung {self.order_line(order, language)} hat "
+                f"{self.station_name(order['origin_station_id'])} mit der {shipment['ship_name']} verlassen. Geplante "
+                f"Ankunft in {self.station_name(order['destination_station_id'])}: {eta}." if de else
+                f"shipment {shipment['shipment_number']} for order {self.order_line(order, language)} has left "
+                f"{self.station_name(order['origin_station_id'])} aboard the {shipment['ship_name']}. Estimated "
+                f"arrival at {self.station_name(order['destination_station_id'])}: {eta}.")
+        return self.add(moment=moment, letter_type="delivery_notice", sender=sender, recipient=recipient,
+                        subject=self.subject("delivery_notice", language, shipment["shipment_number"]),
+                        paragraphs=[text], direction="seller_to_buyer", confidentiality="public",
+                        refs=self.shipment_refs(order, shipment), amount=order["total_amount"], storyline=storyline,
+                        claim=("delivery", shipment["shipment_id"]))
+
+    def delay_notice(self, order: dict[str, Any], *, day: date | None = None, sender_id: int | None = None,
+                     recipient_id: int | None = None, reply_to: Letter | None = None, storyline: str | None = None,
+                     extra: list[str] | None = None) -> Letter | None:
+        """Verzögerungsmeldung des Verkäufers (geplante Ankunft; bei Ankunft nach dem Stichtag unterwegs)."""
+        shipment = self.shipment_by_order[order["order_id"]]
+        if ("delay_notice", shipment["shipment_id"]) in self.claimed or not shipment["risk_incident"]:
+            return None
+        departure = datetime.fromisoformat(shipment["departure_date"])
+        planned = datetime.fromisoformat(shipment["arrival_date"])
+        if day is not None:
+            moment = self.at(day, earliest=departure)
+        elif planned < GAME_REFERENCE_DATETIME:
+            moment = planned - timedelta(minutes=self.rng.randint(20, 240))
+            moment = max(moment, departure + timedelta(minutes=10))
+        else:
+            span = (GAME_REFERENCE_DATETIME - departure).total_seconds() / 60
+            moment = departure + timedelta(minutes=self.rng.uniform(0.3, 0.9) * span) if span > 30 else None
+        if moment is None or moment >= GAME_REFERENCE_DATETIME:
+            return None
+        moment = moment.replace(second=0, microsecond=0)
+        seller, buyer = order["company_id"], order["customer_company_id"]
+        sender = self.person(sender_id, seller, moment, "logistics", station_id=order["origin_station_id"], salt=buyer,
+                             note=storyline or "Verzögerung")
+        recipient = self.person(recipient_id, buyer, moment, "station", station_id=order["destination_station_id"],
+                                salt=seller, note=storyline or "Verzögerung")
+        if reply_to is not None:
+            recipient = self.person(reply_to.sender_employee_id, buyer, moment, "station",
+                                    station_id=order["destination_station_id"], salt=seller)
+        language = self.lang(seller)
+        de = language == "de_DE"
+        text = (f"die Lieferung {shipment['shipment_number']} (Bestellung {order['order_number']}) verzögert sich: "
+                f"{shipment['risk_incident']}. Ursprünglich geplante Ankunft: "
+                f"{self.day_text(shipment['arrival_date'], language)}. Wir halten Sie auf dem Laufenden." if de else
+                f"shipment {shipment['shipment_number']} (order {order['order_number']}) is delayed: "
+                f"{shipment['risk_incident']}. Originally scheduled arrival: "
+                f"{self.day_text(shipment['arrival_date'], language)}. We will keep you posted.")
+        return self.add(moment=moment, letter_type="delay_notice", sender=sender, recipient=recipient,
+                        subject=self.subject("delay_notice", language, shipment["shipment_number"]),
+                        paragraphs=[text, *(extra or [])], direction="seller_to_buyer",
+                        confidentiality="internal" if reply_to else "public",
+                        refs=self.shipment_refs(order, shipment), reply_to=reply_to, storyline=storyline,
+                        claim=("delay_notice", shipment["shipment_id"]))
+
+    def delay_complaint(self, order: dict[str, Any], *, day: date | None = None, sender_id: int | None = None,
+                        recipient_id: int | None = None, storyline: str | None = None,
+                        extra: list[str] | None = None) -> Letter | None:
+        """Verzugsbeschwerde des Käufers nach Ankunft der verspäteten Lieferung (offen: nach geplanter Ankunft)."""
+        shipment = self.shipment_by_order[order["order_id"]]
+        key = ("complaint", order["contract_id"]) if order["contract_id"] else ("complaint_order", order["order_id"])
+        if key in self.claimed:
+            return None
+        if shipment["actual_arrival_date"]:
+            earliest = datetime.fromisoformat(shipment["actual_arrival_date"])
+        else:
+            earliest = datetime.fromisoformat(shipment["arrival_date"]) + timedelta(hours=12)
+        if day is not None:
+            moment = self.at(day, earliest=earliest)
+        else:
+            moment = earliest + timedelta(minutes=self.rng.randint(45, 36 * 60))
+        if moment is None or moment >= GAME_REFERENCE_DATETIME:
+            return None
+        moment = moment.replace(second=0, microsecond=0)
+        seller, buyer = order["company_id"], order["customer_company_id"]
+        sender = self.person(sender_id, buyer, moment, "station", station_id=order["destination_station_id"],
+                             salt=seller, note=storyline or "Beschwerde")
+        recipient = self.person(recipient_id, seller, moment, "relations", salt=buyer, note=storyline or "Beschwerde")
+        language = self.lang(buyer)
+        de = language == "de_DE"
+        hours = fmt_number(self.delay_hours(shipment), language)
+        contract = self.contracts.get(order["contract_id"]) if order["contract_id"] else None
+        reference = (f"zum Vertrag {self.contract_line(contract, language)}" if de else
+                     f"under contract {self.contract_line(contract, language)}") if contract else (
+            f"zur Bestellung {self.order_line(order, language)}" if de
+            else f"for order {self.order_line(order, language)}")
+        if shipment["actual_arrival_date"] and self.delay_hours(shipment) < 1 and contract:
+            arrived = self.day_text(shipment["actual_arrival_date"], language)
+            text = (f"mit der Lieferung {shipment['shipment_number']} {reference} am {arrived} ist die Vertragsfrist "
+                    "überschritten." if de else
+                    f"with shipment {shipment['shipment_number']} {reference} arriving on {arrived}, the contract "
+                    "deadline has been missed.")
+        elif shipment["actual_arrival_date"]:
+            text = (f"die Lieferung {shipment['shipment_number']} {reference} ist erst am "
+                    f"{self.day_text(shipment['actual_arrival_date'], language)} eingetroffen, {hours} Stunden nach "
+                    "dem zugesagten Termin. Die Verzögerung hat unsere Abläufe in "
+                    f"{self.station_name(order['destination_station_id'])} empfindlich gestört." if de else
+                    f"shipment {shipment['shipment_number']} {reference} only arrived on "
+                    f"{self.day_text(shipment['actual_arrival_date'], language)}, {hours} hours behind schedule. The "
+                    "delay has seriously disrupted operations at "
+                    f"{self.station_name(order['destination_station_id'])}.")
+        else:
+            text = (f"die Lieferung {shipment['shipment_number']} {reference} sollte am "
+                    f"{self.day_text(shipment['arrival_date'], language)} eintreffen und ist bis heute nicht "
+                    "angekommen." if de
+                    else f"shipment {shipment['shipment_number']} {reference} was due on "
+                         f"{self.day_text(shipment['arrival_date'], language)} and has still not arrived.")
+        if contract and contract["status"] == "breached":
+            text += (f" Die Frist {self.day_text(contract['deadline'], language)} ist damit überschritten; wir "
+                     "behalten uns die vereinbarte Vertragsstrafe vor." if de else
+                     f" The deadline of {self.day_text(contract['deadline'], language)} has passed; we reserve the "
+                     "right to the agreed contractual penalty.")
+        return self.add(moment=moment, letter_type="delay_complaint", sender=sender, recipient=recipient,
+                        subject=self.subject("delay_complaint", language, shipment["shipment_number"]),
+                        paragraphs=[text, *(extra or [])], direction="buyer_to_seller",
+                        refs=self.shipment_refs(order, shipment), response_required=1, storyline=storyline, claim=key)
+
+    def late_contract_shipment(self, contract: dict[str, Any]) -> dict[str, Any] | None:
+        """Maßgebliche verspätete Abruflieferung: bei Bruch die letzte, sonst die erste über 48 h."""
+        orders = [o for o in self.orders_by_contract[contract["contract_id"]]
+                  if o["order_id"] in self.shipment_by_order]
+        if not orders:
+            return None
+        if contract["status"] == "breached":
+            def arrival(order: dict[str, Any]) -> str:
+                shipment = self.shipment_by_order[order["order_id"]]
+                return shipment["actual_arrival_date"] or "9999"
+            return max(orders, key=lambda o: (arrival(o), o["order_id"]))
+        late = [o for o in orders if self.delay_hours(self.shipment_by_order[o["order_id"]]) > LATE_COMPLAINT_HOURS
+                and (self.shipment_by_order[o["order_id"]]["actual_arrival_date"] or o["status"] == "delayed")]
+        if not late:
+            return None
+        return min(late, key=lambda o: (self.shipment_by_order[o["order_id"]]["arrival_date"], o["order_id"]))
+
+    # -- Vertragsstrafen --------------------------------------------------------------------------------------
+    def penalty_notice(self, contract: dict[str, Any], *, day: date | None = None, sender_id: int | None = None,
+                       recipient_id: int | None = None, storyline: str | None = None,
+                       extra: list[str] | None = None) -> Letter | None:
+        """Strafbescheid des Käufers: Verzugstage × penalty_per_day (Formel wie generate_financials)."""
+        cid = contract["contract_id"]
+        booking = self.penalties.get(cid)
+        if ("penalty", cid) in self.claimed or booking is None or booking["amount"] <= 0:
+            return None
+        complaint = next((letter for letter in reversed(self.letters) if letter.letter_type == "delay_complaint"
+                          and letter.refs["contract_id"] == cid), None)
+        earliest = max(booking["last_arrival"], complaint.sent_at if complaint else booking["last_arrival"])
+        if day is None:
+            day = min(booking["last_arrival"].date() + timedelta(days=self.rng.randint(3, 14)),
+                      GAME_REFERENCE_DATE - timedelta(days=1))
+        moment = self.at(day, earliest=earliest)
+        if moment is None:
+            return None
+        seller, buyer = contract["company_id"], contract["partner_company_id"]
+        amount = booking["amount"]
+        heavy = amount > EXECUTIVE_PENALTY_THRESHOLD
+        sender = self.person(sender_id, buyer, moment, "executive" if heavy else "finance", salt=seller,
+                             note=storyline or "Strafbescheid")
+        recipient = self.person(recipient_id, seller, moment, "executive" if heavy else "finance", salt=buyer,
+                                note=storyline or "Strafbescheid")
+        language = self.lang(buyer)
+        de = language == "de_DE"
+        line = self.contract_line(contract, language)
+        days = booking["late_days"]
+        per_day = self.money(booking["penalty_per_day"], language)
+        due = fmt_date(moment + timedelta(days=30))
+        if booking["in_transit"]:
+            status = ("Die Lieferung ist bis heute nicht vollständig eingetroffen; die Strafe ist bis zum "
+                      f"{self.day_text(booking['last_arrival'], language)} berechnet." if de else
+                      "Delivery is still incomplete; the penalty is calculated up to "
+                      f"{self.day_text(booking['last_arrival'], language)}.")
+        else:
+            arrived = self.day_text(booking["last_arrival"], language)
+            status = (f"Die letzte Teillieferung traf am {arrived} ein." if de else
+                      f"The last partial delivery arrived on {arrived}.")
+        text = (f"der Vertrag {line} war bis zum {self.day_text(contract['deadline'], language)} zu erfüllen. {status} "
+                f"Für {days} Verzugstage zu je {per_day} setzen wir die vertraglich vereinbarte Strafe fest: {days} × "
+                f"{per_day} = {self.money(amount, language)}." if de else
+                f"contract {line} was due by {self.day_text(contract['deadline'], language)}. {status} For {days} days "
+                f"of delay at {per_day} each, we assess the agreed contractual penalty: {days} × {per_day} = "
+                f"{self.money(amount, language)}.")
+        ask = (f"Bitte begleichen Sie den Betrag bis zum {self.day_text(due, language)}." if de else
+               f"Please settle the amount by {self.day_text(due, language)}.")
+        return self.add(moment=moment, letter_type="penalty_notice", sender=sender, recipient=recipient,
+                        subject=self.subject("penalty_notice", language, contract["contract_number"]),
+                        paragraphs=[text, *(extra or []), ask], direction="buyer_to_seller",
+                        confidentiality="confidential" if heavy else "internal", refs=self.contract_refs(contract),
+                        amount=amount, due_date=due, response_required=1, thread=complaint,
+                        sentiment="hostile" if amount > 500_000 else "negative", storyline=storyline,
+                        claim=("penalty", cid))
+
+    def penalty_memo(self, penalty: Letter, contract: dict[str, Any]) -> Letter | None:
+        """Interne Notiz des Verkäufers bei Strafen über 250.000 CR (Finanzbuchhaltung an Vorstand)."""
+        seller = contract["company_id"]
+        moment = self.at((penalty.sent_at + timedelta(days=self.rng.randint(0, 2))).date(), earliest=penalty.sent_at)
+        if moment is None:
+            return None
+        sender = self.pick(seller, moment, "finance")
+        recipient = self.pick(seller, moment, "executive")
+        if sender is None or recipient is None or sender["employee_id"] == recipient["employee_id"]:
+            return None
+        language = self.lang(seller)
+        de = language == "de_DE"
+        text = (f"{self.name(contract['partner_company_id'])} fordert für {contract['contract_number']} "
+                f"{self.money(penalty.amount or 0, language)} Vertragsstrafe. Die Forderung ist rechnerisch korrekt; "
+                "ich empfehle, sie zu begleichen und die Disposition der Strecke "
+                f"{self.station_name(contract['origin_station_id'])} – "
+                f"{self.station_name(contract['destination_station_id'])} zu prüfen." if de else
+                f"{self.name(contract['partner_company_id'])} claims {self.money(penalty.amount or 0, language)} in "
+                f"penalties for {contract['contract_number']}. The claim is arithmetically correct; I recommend paying "
+                f"it and reviewing dispatch on the {self.station_name(contract['origin_station_id'])} – "
+                f"{self.station_name(contract['destination_station_id'])} lane.")
+        return self.add(moment=moment, letter_type="internal_memo", sender=sender, recipient=recipient,
+                        subject=self.subject("internal_memo", language, contract["contract_number"]),
+                        paragraphs=[text], direction="internal", confidentiality="confidential",
+                        refs={"contract_id": contract["contract_id"]}, amount=penalty.amount, refers_to=penalty)
+
+    # -- Mahnungen --------------------------------------------------------------------------------------------
+    def payment_reminders(self, order: dict[str, Any], *, days: tuple[date | None, ...] | None = None,
+                          sender_id: int | None = None, recipient_id: int | None = None,
+                          storyline: str | None = None, skip: frozenset[int] = frozenset()) -> list[Letter]:
+        """Mahnstufen zu einer überfälligen Bestellung: Fälligkeit (Ankunft + 30 T) + 3..7 / +21 / +45 T."""
+        shipment = self.shipment_by_order.get(order["order_id"])
+        if order["payment_status"] != "overdue" or shipment is None or not shipment["actual_arrival_date"]:
+            return []
+        due = datetime.fromisoformat(shipment["actual_arrival_date"]).date() + timedelta(days=PAYMENT_TERMS_DAYS)
+        seller = order["company_id"]
+        letters: list[Letter] = []
+        previous: Letter | None = None
+        for stage, (low, high) in enumerate(REMINDER_STAGE_DAYS):
+            if stage in skip or ("reminder", order["order_id"], stage) in self.claimed:
+                continue
+            day = days[stage] if days and days[stage] else due + timedelta(days=self.rng.randint(low, high))
+            if day >= GAME_REFERENCE_DATE:
+                break
+            moment = self.at(day, earliest=previous.sent_at if previous else None)
+            if moment is None:
+                break
+            sender = self.person(sender_id, seller, moment, "finance", salt=order["customer_id"],
+                                 note=storyline or "Mahnung")
+            customer = None
+            recipient = None
+            if order["customer_company_id"]:
+                recipient = self.person(recipient_id, order["customer_company_id"], moment, "finance", salt=seller,
+                                        note=storyline or "Mahnung")
+            else:
+                customer = self.customers[order["customer_id"]]
+            language = self.lang(seller)
+            de = language == "de_DE"
+            label = REMINDER_LABELS[stage][lang_index(language)]
+            amount = order["total_amount"]
+            texts = (
+                (f"unsere Rechnung zur Bestellung {self.order_line(order, language)} über "
+                 f"{self.money(amount, language)} war am {self.day_text(due, language)} fällig. Sicher handelt es sich "
+                 "um ein Versehen – bitte überweisen Sie den Betrag in den nächsten Tagen.",
+                 f"our invoice for order {self.order_line(order, language)} over {self.money(amount, language)} was "
+                 f"due on {self.day_text(due, language)}. This is surely an oversight – please transfer the amount "
+                 "within the next few days."),
+                (f"trotz unserer Zahlungserinnerung ist die Rechnung zur Bestellung {order['order_number']} über "
+                 f"{self.money(amount, language)} (fällig seit {self.day_text(due, language)}) weiter offen. Wir "
+                 "bitten um Ausgleich innerhalb von zehn Tagen.",
+                 f"despite our reminder, the invoice for order {order['order_number']} over "
+                 f"{self.money(amount, language)} (due since {self.day_text(due, language)}) is still unpaid. Please "
+                 "settle within ten days."),
+                (f"die Rechnung zur Bestellung {order['order_number']} über {self.money(amount, language)} ist seit "
+                 f"{self.day_text(due, language)} überfällig. Geht die Zahlung nicht binnen sieben Tagen ein, liefern "
+                 "wir nur noch gegen Vorkasse und übergeben die Forderung dem Inkasso.",
+                 f"the invoice for order {order['order_number']} over {self.money(amount, language)} has been overdue "
+                 f"since {self.day_text(due, language)}. Unless payment is received within seven days, we will only "
+                 "deliver against prepayment and refer the claim to collection."),
+            )
+            letter = self.add(moment=moment, letter_type="payment_reminder", sender=sender, recipient=recipient,
+                              recipient_company_id=order["customer_company_id"], customer=customer,
+                              subject=f"{label}: {order['order_number']}",
+                              paragraphs=[texts[stage][lang_index(language)]],
+                              direction="seller_to_buyer", confidentiality="internal",
+                              refs={"order_id": order["order_id"], "contract_id": order["contract_id"],
+                                    "shipment_id": shipment["shipment_id"]},
+                              amount=amount, due_date=fmt_date(due), response_required=1, thread=previous,
+                              sentiment=("neutral", "negative", "hostile")[stage], storyline=storyline,
+                              claim=("reminder", order["order_id"], stage))
+            if letter is not None:
+                letters.append(letter)
+                previous = letter
+        return letters
+
+    # -- Abmahnungen, Ereignisse, Rivalitäten -----------------------------------------------------------------
+    def repeat_breach_warning(self, framework: dict[str, Any], penalty: Letter, count: int) -> Letter | None:
+        """Abmahnung des Käufers nach dem zweiten (vierten, …) Vertragsbruch innerhalb eines Rahmens."""
+        seller, buyer = framework["company_id"], framework["partner_company_id"]
+        moment = self.at((penalty.sent_at + timedelta(days=self.rng.randint(1, 4))).date(), earliest=penalty.sent_at)
+        if moment is None:
+            return None
+        sender = self.pick(buyer, moment, "executive")
+        recipient = self.pick(seller, moment, "executive")
+        language = self.lang(buyer)
+        de = language == "de_DE"
+        number = framework["agreement_number"]
+        text = (f"mit {self.contracts[penalty.refs['contract_id']]['contract_number']} ist bereits der {count}. Abruf "
+                f"aus dem Rahmenvertrag {number} verspätet und gebrochen. Wir mahnen die Einhaltung der Liefertermine "
+                "ausdrücklich ab. Im Wiederholungsfall prüfen wir eine Teilkündigung des Rahmens." if de else
+                f"{self.contracts[penalty.refs['contract_id']]['contract_number']} is already call-off no. {count} "
+                f"under framework agreement {number} to be late and in breach. We formally insist on the agreed "
+                "delivery dates. Should this recur, we will consider a partial termination of the framework.")
+        return self.add(moment=moment, letter_type="breach_warning", sender=sender, recipient=recipient,
+                        subject=self.subject("breach_warning", language, number), paragraphs=[text],
+                        direction="buyer_to_seller", confidentiality="confidential",
+                        refs=self.framework_refs(framework, contract_id=penalty.refs["contract_id"]),
+                        response_required=1, refers_to=penalty)
+
+    def event_memo(self, event: dict[str, Any], *, day: date | None = None, sender_id: int | None = None,
+                   recipient_id: int | None = None, storyline: str | None = None,
+                   extra: list[str] | None = None) -> Letter | None:
+        """Interne Notiz der Stationsleitung an den Vorstand nach einem schweren Ereignis."""
+        if ("event_memo", event["event_id"]) in self.claimed:
+            return None
+        station = self.world.stations[event["station_id"]]
+        company = station["company_id"]
+        event_day = date.fromisoformat(event["event_date"])
+        moment = self.at(day or event_day + timedelta(days=self.rng.randint(0, 2)))
+        if moment is None:
+            return None
+        sender = self.person(sender_id, company, moment, "station", station_id=station["station_id"],
+                             note=storyline or "Notiz")
+        recipient = self.person(recipient_id, company, moment, "executive", note=storyline or "Notiz")
+        if sender is None or recipient is None or sender["employee_id"] == recipient["employee_id"]:
+            return None
+        language = self.lang(company)
+        de = language == "de_DE"
+        product = self.product_label(event["affected_product_id"]) if event["affected_product_id"] else "–"
+        text = (f"Lagebericht: {self.event_label(event, language)} (Schweregrad "
+                f"{SEVERITY_LABELS[event['severity']][0]}). Am stärksten betroffen ist {product}, Preiswirkung "
+                f"{fmt_number(event['price_impact'] * 100, language, 1)} %, voraussichtliche Dauer "
+                f"{event['duration_days']} Tage. Ich bitte um Freigabe, Partner und Kunden mit offenen Abrufen vorab "
+                "zu informieren." if de else
+                f"Situation report: {self.event_label(event, language)} (severity "
+                f"{SEVERITY_LABELS[event['severity']][1]}). Most affected is {product}, price impact "
+                f"{fmt_number(event['price_impact'] * 100, language, 1)}%, expected duration {event['duration_days']} "
+                "days. Requesting approval to brief partners and customers with open call-offs.")
+        return self.add(moment=moment, letter_type="internal_memo", sender=sender, recipient=recipient,
+                        subject=self.subject("internal_memo", language, self.event_label(event, language)),
+                        paragraphs=[text, *(extra or [])], direction="internal",
+                        confidentiality="confidential" if event["severity"] == "critical" else "internal",
+                        refs={"event_id": event["event_id"]}, storyline=storyline,
+                        claim=("event_memo", event["event_id"]))
+
+    def rivalry_protest(self, rivalry: dict[str, Any]) -> None:
+        """Protest des Vorstands an den Vorstand des Rivalen (Anlass: Beginn der Rivalität oder Ereignis im System)."""
+        rid = rivalry["rivalry_id"]
+        if ("protest", rid) in self.claimed:
+            return
+        company, rival = rivalry["company_id"], rivalry["rival_company_id"]
+        since = date.fromisoformat(rivalry["since_date"])
+        stations = self.world.stations
+        events = [e for e in self.events.values()
+                  if stations[e["station_id"]]["system_id"] == rivalry["contested_system_id"]
+                  and stations[e["station_id"]]["company_id"] in (company, rival)
+                  and e["severity"] in ("major", "critical") and e["event_date"] >= "2057-01-01"]
+        event = events[-1] if events else None
+        if event is not None:
+            day = date.fromisoformat(event["event_date"]) + timedelta(days=self.rng.randint(2, 10))
+        elif since >= date(2057, 1, 1):
+            day = since + timedelta(days=self.rng.randint(3, 20))
+        else:
+            day = random_date(self.rng, date(2058, 6, 1), date(2059, 11, 30))
+        moment = self.at(min(day, GAME_REFERENCE_DATE - timedelta(days=2)))
+        if moment is None:
+            return
+        sender = self.pick(company, moment, "executive")
+        recipient = self.pick(rival, moment, "executive")
+        language = self.lang(company)
+        de = language == "de_DE"
+        system = self.world.systems_by_id[rivalry["contested_system_id"]]["name"]
+        cause = (f" Anlass ist {self.event_label(event, language)}." if de else
+                 f" The occasion is {self.event_label(event, language)}.") if event else ""
+        text = (f"wir protestieren in aller Form gegen das Vorgehen der {self.name(rival)} im {system}-System.{cause} "
+                "Wir fordern Sie auf, Ihre Aktivitäten dort zu unterlassen, und behalten uns alle Schritte "
+                "vor." if de else
+                f"we formally protest against the conduct of {self.name(rival)} in the {system} system.{cause} We "
+                "demand that you cease these activities and reserve all further steps.")
+        protest = self.add(moment=moment, letter_type="protest", sender=sender, recipient=recipient,
+                           subject=self.subject("protest", language, system), paragraphs=[text], direction="to_rival",
+                           confidentiality="public", refs={"rivalry_id": rid,
+                                                           "event_id": event["event_id"] if event else None},
+                           response_required=1, claim=("protest", rid))
+        if protest is not None and self.rng.random() < 0.5:
+            self.protest_reply(protest, rivalry)
+
+    def protest_reply(self, protest: Letter, rivalry: dict[str, Any], *, day: date | None = None,
+                      sender_id: int | None = None, storyline: str | None = None,
+                      extra: list[str] | None = None) -> Letter | None:
+        """Antwort des Rivalen auf einen Protest."""
+        rival = protest.recipient_company_id
+        moment = self.at(day or (protest.sent_at + timedelta(days=self.rng.randint(3, 10))).date(),
+                         earliest=protest.sent_at)
+        if moment is None or rival is None:
+            return None
+        sender = self.person(sender_id or protest.recipient_employee_id, rival, moment, "executive",
+                             note=storyline or "Protestantwort")
+        language = self.lang(rival)
+        de = language == "de_DE"
+        text = (f"Ihre Vorwürfe weisen wir zurück. Die {self.name(rival)} handelt im Rahmen ihrer Lizenzen; für "
+                f"Verluste der {self.name(protest.sender_company_id)} sind wir nicht verantwortlich." if de else
+                f"we reject your allegations. {self.name(rival)} operates within its licences and is not responsible "
+                f"for losses incurred by {self.name(protest.sender_company_id)}.")
+        return self.add(moment=moment, letter_type="protest", sender=sender,
+                        recipient=self.person(protest.sender_employee_id, protest.sender_company_id, moment,
+                                              "executive"),
+                        subject=self.subject("protest", language, protest.subject.split(": ", 1)[-1]),
+                        paragraphs=[text, *(extra or [])], direction="to_rival", confidentiality="public",
+                        refs={"rivalry_id": rivalry["rivalry_id"]}, reply_to=protest, storyline=storyline)
+
+    def truth(self) -> int | None:
+        """Wahrheitsgehalt eines Gerüchts (30 % wahr, 50 % offen, 20 % falsch)."""
+        return weighted_choice(self.rng, RUMOR_TRUTH_SPLIT)
+
+    def rivalry_rumors(self, rivalry: dict[str, Any]) -> None:
+        """Gerüchte im Umfeld einer Rivalität: ein Leck-Kandidat der einen Firma steckt der anderen Vertragsinterna."""
+        rid = rivalry["rivalry_id"]
+        for _ in range(self.rng.randint(2, 4)):
+            source, target = ((rivalry["company_id"], rivalry["rival_company_id"]) if self.rng.random() < 0.5
+                              else (rivalry["rival_company_id"], rivalry["company_id"]))
+            start = max(date.fromisoformat(rivalry["since_date"]), date(2057, 6, 1))
+            if start >= date(2059, 12, 20):
+                continue
+            moment = self.at(random_date(self.rng, start, date(2059, 12, 20)))
+            if moment is None:
+                continue
+            day = fmt_date(moment)
+            leakers = [e for e in self.staff[source] if employed_on(e, day) and e["intel_access_level"] >= 1
+                       and satisfies_leak_rule(e)]
+            contracts = [c for c in self.contracts.values() if source in (c["company_id"], c["partner_company_id"])
+                         and c["start_date"] <= day <= c["deadline"] and c["status"] != "draft"]
+            if not leakers or not contracts:
+                continue
+            leaker = self.rng.choice(leakers)
+            contract = self.rng.choice(contracts)
+            recipient = self.pick(target, moment, "intelligence", salt=source)
+            accuracy = self.truth()
+            language = self.lang(source)
+            de = language == "de_DE"
+            factor = 1.0 if accuracy != 0 else self.rng.uniform(1.3, 1.8)
+            value = self.money(contract["total_value"] * factor, language)
+            partner = contract["partner_company_id"] if contract["company_id"] == source else contract["company_id"]
+            text = (f"unter uns: Der Vertrag {contract['contract_number']} mit der {self.name(partner)} ist {value} "
+                    "schwer und wackelt. Man spricht intern von Nachverhandlung – wer jetzt ein besseres Angebot "
+                    "macht, hat gute Chancen." if de else
+                    f"between us: contract {contract['contract_number']} with {self.name(partner)} is worth {value} "
+                    "and on shaky ground. Internally there is talk of renegotiation – a better offer now stands a "
+                    "good chance.")
+            self.add(moment=moment, letter_type="rumor", sender=leaker, recipient=recipient,
+                     subject=self.subject("rumor", language, contract["contract_number"]), paragraphs=[text],
+                     direction="to_rival", confidentiality="confidential",
+                     refs={"rivalry_id": rid, "contract_id": contract["contract_id"]}, is_accurate=accuracy,
+                     leaked_by=leaker["employee_id"], leaked_to=target)
+
+    # -- Lecks vertraulicher Schreiben --------------------------------------------------------------------------
+    def leak_letters(self) -> None:
+        """Vertrauliche Schreiben können über Leck-Kandidaten an Rivalen gelangen (Formel aus correspondence_design).
+
+        Wahrscheinlichkeit = espionage_risk/100 × Bestechlichkeit/100 × (1 − Loyalität/150), gedämpft mit LEAK_SCALE.
+        Der Tipp geht an die Marktaufklärung des Rivalen und verweist auf das Original.
+        """
+        for original in list(self.letters):
+            if (original.confidentiality != "confidential" or original.leak_status != "none"
+                    or original.letter_type in ("confidential_tip", "rumor")):
+                continue
+            day = fmt_date(original.sent_at)
+            for side in dict.fromkeys(c for c in (original.sender_company_id, original.recipient_company_id) if c):
+                rivals = self.rivalries_of[side]
+                if not rivals:
+                    continue
+                rivalry = self.rng.choice(rivals)
+                rival = rivalry["rival_company_id"] if rivalry["company_id"] == side else rivalry["company_id"]
+                pool = [e for e in self.staff[side] if employed_on(e, day) and satisfies_leak_rule(e)
+                        and e["intel_access_level"] >= original.min_intel_access_level]
+                if not pool:
+                    continue
+                leaker = self.rng.choice(pool)
+                probability = (rivalry["espionage_risk"] / 100 * leaker["bribe_susceptibility"] / 100
+                               * (1 - leaker["loyalty"] / 150) * LEAK_SCALE)
+                if self.rng.random() >= probability:
+                    continue
+                moment = self.at((original.sent_at + timedelta(days=self.rng.randint(1, 12))).date(),
+                                 earliest=original.sent_at)
+                if moment is None or not employed_on(leaker, fmt_date(moment)):
+                    continue
+                recipient = self.pick(rival, moment, "intelligence", salt=side)
+                if recipient is None:
+                    continue
+                tip = self.rng.random() < 0.65
+                accuracy = 1 if tip else self.truth()
+                letter = self.leak_message(original, leaker, recipient, moment, tip, accuracy, rivalry)
+                if letter is not None:
+                    original.leak_status = "leaked" if tip else "rumored"
+                    original.leaked_by, original.leaked_to = leaker["employee_id"], rival
+                    break
+
+    def leak_message(self, original: Letter, leaker: dict[str, Any], recipient: dict[str, Any], moment: datetime,
+                     tip: bool, accuracy: int | None, rivalry: dict[str, Any] | None,
+                     storyline: str | None = None, extra: list[str] | None = None) -> Letter | None:
+        """Tipp oder Gerücht über ein vertrauliches Schreiben."""
+        language = self.lang(leaker["company_id"])
+        de = language == "de_DE"
+        sender_name = self.name(original.sender_company_id)
+        target_name = self.name(original.recipient_company_id) if original.recipient_company_id else "–"
+        amount = original.amount
+        if amount and accuracy == 0:
+            amount *= self.rng.uniform(1.3, 1.8)
+        amount_text = ""
+        if amount:
+            value = self.money(amount, language)
+            amount_text = f" Es geht um {value}." if de else f" The amount is {value}."
+        kind = TYPE_LABELS[original.letter_type][lang_index(language)]
+        if tip:
+            text = (f"mir liegt ein vertrauliches Schreiben vor: {kind} der {sender_name} an die {target_name} vom "
+                    f"{self.day_text(original.sent_at, language)}, Betreff „{original.subject}“.{amount_text} Eine "
+                    "Kopie kann ich beschaffen – gegen die übliche Anerkennung." if de else
+                    f"I have seen a confidential letter: {kind} from {sender_name} to {target_name}, dated "
+                    f"{self.day_text(original.sent_at, language)}, subject “{original.subject}”.{amount_text} I can "
+                    "obtain a copy – for the usual consideration.")
+        else:
+            text = (f"man hört, zwischen der {sender_name} und der {target_name} gebe es Ärger: {kind} vom "
+                    f"{self.day_text(original.sent_at, language)}.{amount_text} Bestätigen kann ich das "
+                    "noch nicht." if de else
+                    f"word is there is trouble between {sender_name} and {target_name}: {kind} dated "
+                    f"{self.day_text(original.sent_at, language)}.{amount_text} I cannot confirm it yet.")
+        letter_type = "confidential_tip" if tip else "rumor"
+        refs = {key: original.refs[key] for key in ("contract_id", "framework_agreement_id", "event_id", "order_id")}
+        refs["rivalry_id"] = rivalry["rivalry_id"] if rivalry else None
+        return self.add(moment=moment, letter_type=letter_type, sender=leaker, recipient=recipient,
+                        subject=self.subject(letter_type, language, original.subject.split(": ", 1)[-1]),
+                        paragraphs=[text, *(extra or [])], direction="to_rival" if rivalry else "lateral",
+                        confidentiality="confidential", refs=refs, amount=amount, is_accurate=accuracy,
+                        leaked_by=leaker["employee_id"], leaked_to=recipient["company_id"], refers_to=original,
+                        storyline=storyline)
+
+    # -- Abschluss --------------------------------------------------------------------------------------------
+    def finalize(self) -> None:
+        """Vergibt IDs und Nummern chronologisch, löst Bezüge auf und setzt Lese- und Bearbeitungsstatus."""
+        world = self.world
+        ordered = sorted(self.letters, key=lambda letter: (letter.sent_at, letter.key))
+        ids = {letter.key: number for number, letter in enumerate(ordered, start=1)}
+        replies: dict[int, list[Letter]] = defaultdict(list)
+        followers: dict[int, list[Letter]] = defaultdict(list)
+        for letter in ordered:
+            if letter.reply_to is not None:
+                replies[letter.reply_to].append(letter)
+            if letter.thread != letter.key:
+                followers[letter.thread].append(letter)
+        counters: dict[tuple[int, int], int] = defaultdict(int)
+        for letter in ordered:
+            company = world.companies[letter.sender_company_id]
+            language = company["language"]
+            counters[(letter.sender_company_id, letter.sent_at.year)] += 1
+            serial = counters[(letter.sender_company_id, letter.sent_at.year)]
+            number = (f"{world.profiles[letter.sender_company_id].sku_prefix}-{CORRESPONDENCE_PREFIX[language]}-"
+                      f"{letter.sent_at.year}-{serial:05d}")
+            delay_hours = {"holo_call": 0.0, "encrypted_message": self.rng.uniform(0.1, 12),
+                           "email": self.rng.uniform(0.3, 48), "letter": self.rng.uniform(20, 120)}[letter.channel]
+            read_at = letter.sent_at + timedelta(hours=delay_hours)
+            if letter.channel == "holo_call":
+                read_at = letter.sent_at
+            elif (GAME_REFERENCE_DATETIME - letter.sent_at).days < 20 and self.rng.random() < 0.1:
+                read_at = None  # liegt zum Stichtag ungelesen im Postfach
+            if read_at is not None and read_at >= GAME_REFERENCE_DATETIME:
+                read_at = None
+            answers = replies.get(letter.key, [])
+            if any(a.letter_type in ("offer_rejection", "amendment_rejection") for a in answers):
+                status = "rejected"
+            elif answers:
+                status = "answered"
+            elif letter.letter_type == "payment_reminder" and any(
+                    f.letter_type == "payment_reminder" and f.sent_at > letter.sent_at
+                    for f in [self.by_key[letter.thread], *followers.get(letter.thread, [])]):
+                status = "escalated"
+            elif letter.letter_type in ("contract_confirmation", "amendment_confirmation", "delivery_notice",
+                                        "internal_memo") and read_at is not None:
+                status = "closed"
+            else:
+                status = "read" if read_at is not None else "sent"
+            if read_at is None and status in ("answered", "rejected", "closed"):
+                read_at = min((a.sent_at for a in answers), default=letter.sent_at)
+                read_at = max(read_at, letter.sent_at)
+            sender_station = (self.employees[letter.sender_employee_id]["station_id"] if letter.sender_employee_id
+                              else None)
+            row = world.add("correspondence", {
+                "correspondence_number": number,
+                "correspondence_type": letter.letter_type,
+                "channel": letter.channel,
+                "direction": letter.direction,
+                "thread_id": ids[letter.thread],
+                "in_reply_to_id": ids[letter.reply_to] if letter.reply_to is not None else None,
+                "refers_to_correspondence_id": ids[letter.refers_to] if letter.refers_to is not None else None,
+                "sent_at": fmt_dt(letter.sent_at),
+                "is_read": int(read_at is not None),
+                "read_at": fmt_dt(read_at) if read_at is not None else None,
+                "sender_company_id": letter.sender_company_id,
+                "sender_employee_id": letter.sender_employee_id,
+                "sender_station_id": sender_station,
+                "recipient_company_id": letter.recipient_company_id,
+                "recipient_employee_id": letter.recipient_employee_id,
+                "recipient_customer_id": letter.recipient_customer_id,
+                "language": language,
+                "subject": letter.subject,
+                "body": letter.body,
+                "confidentiality": letter.confidentiality,
+                "min_intel_access_level": letter.min_intel_access_level,
+                "sentiment": letter.sentiment,
+                "amount": letter.amount,
+                "due_date": letter.due_date,
+                "response_required": letter.response_required,
+                "status": status,
+                "trust_effect": letter.trust_effect,
+                "is_accurate": letter.is_accurate,
+                "intel_value": letter.intel_value,
+                "leak_status": letter.leak_status,
+                "leaked_by_employee_id": letter.leaked_by,
+                "leaked_to_company_id": letter.leaked_to,
+                **letter.refs,
+                "storyline_code": letter.storyline,
+            })
+            assert row["correspondence_id"] == ids[letter.key]
+            seen = {letter.sender_employee_id, letter.recipient_employee_id}
+            for employee_id, copy_type in letter.copies:
+                if employee_id in seen:
+                    continue
+                seen.add(employee_id)
+                world.add("correspondence_copies", {"correspondence_id": row["correspondence_id"],
+                                                    "employee_id": employee_id, "copy_type": copy_type})
+
+
+def escort_breaches(desk: CorrespondenceDesk, company_ids: set[int], until: str) -> list[dict[str, Any]]:
+    """Gebrochene Verträge zwischen den Firmen, deren Abrufe wegen abgewarteten Geleitschutzes zu spät kamen."""
+    hits = []
+    for contract in desk.contracts.values():
+        if (contract["status"] != "breached" or contract["company_id"] not in company_ids
+                or contract["partner_company_id"] not in company_ids):
+            continue
+        for order in desk.orders_by_contract[contract["contract_id"]]:
+            shipment = desk.shipment_by_order.get(order["order_id"])
+            incident = (shipment or {}).get("risk_incident") or ""
+            arrival = (shipment or {}).get("actual_arrival_date") or "9999"
+            if ("Geleitschutz" in incident or "escort" in incident) and arrival[:10] <= until:
+                hits.append(contract)
+                break
+    return sorted(hits, key=lambda c: c["contract_number"])
+
+
+def overdue_orders(desk: CorrespondenceDesk, seller_id: int, buyer_id: int, day: date) -> list[dict[str, Any]]:
+    """Überfällige Bestellungen eines Firmenkunden an einem Tag (Fälligkeit = Ankunft + 30 T)."""
+    result = []
+    for order in desk.orders.values():
+        key = (order["company_id"], order["customer_company_id"], order["payment_status"])
+        if key != (seller_id, buyer_id, "overdue"):
+            continue
+        shipment = desk.shipment_by_order.get(order["order_id"])
+        if shipment and shipment["actual_arrival_date"]:
+            due = datetime.fromisoformat(shipment["actual_arrival_date"]).date() + timedelta(days=PAYMENT_TERMS_DAYS)
+            if due < day:
+                result.append(order)
+    return sorted(result, key=lambda o: o["order_number"])
+
+
+def add_storylines(desk: CorrespondenceDesk) -> None:
+    """Verankerte Vorgänge V1–V41 (Entscheidung Phase 2, Abschnitt 6.3) mit echten Bestandsobjekten (Seed 42).
+
+    Jeder Vorgang prüft seine Bezugsobjekte und Personen. Fehlt ein Objekt, entfällt der Vorgang; ist eine
+    Person am Datum nicht beschäftigt, springt ein Ersatz nach Rolle ein. Abweichungen vom Plan landen in
+    `desk.adaptations`. Datumsanpassungen an die Daten (Unterzeichnung = Beginn − 30 T) sind hier vermerkt.
+    """
+    d = date.fromisoformat
+    ids = desk.world.company_ids_by_key
+    employee = desk.employees.get
+    contract = desk.contract_by_number.get
+    order_no = desk.order_by_number.get
+    framework = desk.framework_by_number.get
+    amendment = desk.amendment_by_number.get
+    note = desk.adaptations.append
+
+    def at(day_text: str, earliest: datetime | None = None) -> datetime | None:
+        return desk.at(d(day_text), earliest)
+
+    def who(employee_id: int | None, key: str, moment: datetime | None, role: str, code: str,
+            station_id: int | None = None) -> dict[str, Any] | None:
+        if moment is None:
+            return None
+        return desk.person(employee_id, ids[key], moment, role, station_id, salt=0, note=code)
+
+    def contact(key: str, moment: datetime | None, role: str, other: str) -> dict[str, Any] | None:
+        return desk.pick(ids[key], moment, role, salt=ids[other]) if moment else None
+
+    def missing(code: str, *objects: Any) -> bool:
+        if any(o is None for o in objects):
+            note(f"{code}: Bezugsobjekt fehlt im Datenstand, Vorgang entfällt")
+            return True
+        return False
+
+    def order_of(shipment_number: str) -> dict[str, Any] | None:
+        shipment = desk.shipment_by_number.get(shipment_number)
+        return desk.orders.get(shipment["order_id"]) if shipment else None
+
+    def rivalry(key: str, rival_key: str) -> dict[str, Any] | None:
+        return next((r for r in desk.rivalries.values()
+                     if (r["company_id"], r["rival_company_id"]) == (ids[key], ids[rival_key])), None)
+
+    def complaint_first(k: dict[str, Any]) -> None:
+        late = desk.late_contract_shipment(k)
+        if late is not None:
+            desk.delay_complaint(late)
+
+    # V1 – Mahnstufen 1–3 Eisenkrone → Feldspat (K4)
+    order = order_no("EKM-BST-2057-00352")
+    if not missing("V1", order):
+        desk.payment_reminders(order, days=(d("2057-08-28"), d("2057-09-13"), d("2057-10-07")), sender_id=169,
+                               recipient_id=2, storyline="V1")
+
+    # V2 – Strafbescheid EKM-VTR-2057-0017 und Strafklausel EKM-RV-2057-02/N4
+    k, a = contract("EKM-VTR-2057-0017"), amendment("EKM-RV-2057-02/N4")
+    if not missing("V2", k, a):
+        complaint_first(k)
+        penalty = desk.penalty_notice(k, day=d("2057-12-20"), sender_id=293, recipient_id=170, storyline="V2",
+                                      extra=["We are attaching a proposal for a stricter penalty clause under "
+                                             "framework agreement EKM-RV-2057-02 (amendment EKM-RV-2057-02/N4)."])
+        desk.amendment_letters(a, offer_sender=293, offer_recipient=170, thread=penalty, storyline="V2")
+
+    # V3 – Abmahnung nach KI-Ausfall Förster (Ereignis 19), Servicevereinbarung CCI-MSA-2057-01/A1
+    fw, a, event = framework("CCI-MSA-2057-01"), amendment("CCI-MSA-2057-01/A1"), desk.events.get(19)
+    if not missing("V3", fw, a, event):
+        moment = at("2058-02-10")
+        warning = desk.add(
+            moment=moment, letter_type="breach_warning", sender=who(178, "eisenkrone", moment, "station", "V3"),
+            recipient=contact("cindervale", moment, "relations", "eisenkrone"),
+            subject=desk.subject("breach_warning", "de_DE", f"{fw['agreement_number']} – Ausfall Förster"),
+            paragraphs=[f"am {desk.day_text(event['event_date'], 'de_DE')} ist die KI-Leitsteuerung der "
+                        f"{desk.station_name(event['station_id'])} ausgefallen; die Fertigung stand "
+                        f"{event['duration_days']} Tage. Die Steuerkerne stammen aus dem Rahmenvertrag "
+                        f"{fw['agreement_number']}.",
+                        "Wir mahnen die zugesicherte Verfügbarkeit ab und erwarten eine Servicevereinbarung mit "
+                        "garantierten Reaktionszeiten. Einen Nachtrag dazu erhalten Sie von unserer "
+                        "Partnerbetreuung."],
+            direction="buyer_to_seller", confidentiality="confidential",
+            refs=desk.framework_refs(fw, event_id=event["event_id"]), response_required=1, storyline="V3")
+        desk.amendment_letters(a, offer_sender=170, thread=warning, storyline="V3")
+
+    # V4 – Volumensenkung HMX-MSA-2057-03/A4 nach Ereignis 19
+    a = amendment("HMX-MSA-2057-03/A4")
+    if not missing("V4", a, event):
+        desk.amendment_letters(a, offer_sender=170, offer_recipient=332, reply_sender=332, storyline="V4",
+                               extra_offer=["Nach dem Ausfall an der Industriestation Förster brauchen wir 2058 "
+                                            "deutlich weniger Vorprodukte aus Sol und Halcyon."])
+
+    # V5 – Ende der Kommission Driftwood → Second Hull
+    partnership = desk.active_pair.get((ids["driftwood"], ids["second_hull"])) or next(
+        (p for p in desk.partnerships.values() if (p["company_id"], p["partner_company_id"])
+         == (ids["driftwood"], ids["second_hull"])), None)
+    if not missing("V5", partnership):
+        moment = at("2058-04-01")
+        desk.add(moment=moment, letter_type="termination_notice",
+                 sender=contact("second_hull", moment, "executive", "driftwood"),
+                 recipient=who(26, "driftwood", moment, "relations", "V5"),
+                 subject=desk.subject("termination_notice", "en_US", "consignment arrangement"),
+                 paragraphs=["we hereby give notice to end our consignment arrangement with "
+                             f"{desk.name(ids['driftwood'])} as of {desk.day_text(partnership['end_date'], 'en_US')}. "
+                             "Salvage lots already in our yards will be settled at the agreed rates.",
+                             "Second Hull will source hull scrap in Nyx directly from now on."],
+                 direction="buyer_to_seller", refs={"partnership_id": partnership["partnership_id"]}, storyline="V5")
+
+    # V6 – Interne Notiz nach der Söldner-Razzia 26
+    event = desk.events.get(26)
+    if not missing("V6", event):
+        desk.event_memo(event, day=d("2058-07-02"), sender_id=302, recipient_id=293, storyline="V6",
+                        extra=[f"The raid was carried out by mercenaries working for {desk.name(ids['ravenmoor'])}. "
+                               "Weapons and transit licences were seized; I recommend we talk to Ravenmoor before "
+                               "their escort framework is signed."])
+
+    # V7 – Geleitschutzrahmen RCS-MSA-2058-01 (Verhandlung vor der Unterzeichnung 2058-07-02)
+    fw = framework("RCS-MSA-2058-01")
+    if not missing("V7", fw):
+        fid = fw["framework_agreement_id"]
+        moment = at("2058-06-12")
+        offer = desk.framework_letter(
+            fw, "offer", moment, contact("ravenmoor", moment, "executive", "helix"),
+            who(304, "helix", moment, "station", "V7"), storyline="V7", claim=("fw_thread", fid),
+            extra=["After the pirate attack on Kharon Landing IV (November 2057) we offer armed escorts and frontier "
+                   "supplies for the Kharon corridor under one framework."])
+        moment = at("2058-06-22")
+        counter = desk.framework_letter(fw, "counter_offer", moment, who(304, "helix", moment, "station", "V7"),
+                                        desk.employees.get(offer.sender_employee_id) if offer else None,
+                                        reply_to=offer, storyline="V7")
+        moment = at("2058-08-01")
+        desk.framework_letter(fw, "contract_confirmation", moment, who(293, "helix", moment, "executive", "V7"),
+                              who(fw["seller_signatory_id"], "ravenmoor", moment, "executive", "V7"),
+                              reply_to=counter or offer, storyline="V7", claim=("fw_confirm", fid))
+        note("V7: Angebot und Gegenangebot auf 2058-06-12/06-22 vorgezogen (Unterzeichnung 2058-07-02 laut Daten), "
+             "Bestätigung zum Vertragsstart 2058-08-01")
+
+    # V8 – Verzugsbeschwerde und Strafbescheid EKM-VTR-2058-0099
+    k = contract("EKM-VTR-2058-0099")
+    if not missing("V8", k):
+        desk.delay_complaint(desk.late_contract_shipment(k), day=d("2058-08-19"), sender_id=45, recipient_id=179,
+                             storyline="V8")
+        desk.penalty_notice(k, day=d("2058-08-28"), sender_id=40, recipient_id=169, storyline="V8")
+
+    # V9 – Abmahnung Erstandienung Rohstoffe Halcyon (EKM-RV-2057-01) und Antwort Corvane
+    fw, k33, k39 = framework("EKM-RV-2057-01"), contract("LAK-VTR-2058-0033"), contract("LAK-VTR-2058-0039")
+    if not missing("V9", fw, k33, k39):
+        moment = at("2058-08-20")
+        warning = desk.add(
+            moment=moment, letter_type="breach_warning", sender=who(170, "eisenkrone", moment, "relations", "V9"),
+            recipient=who(119, "corvane", moment, "relations", "V9"),
+            subject=desk.subject("breach_warning", "de_DE", f"{fw['agreement_number']} – Rohstoffe Halcyon"),
+            paragraphs=[f"nach unseren Informationen bezieht die {desk.name(ids['corvane'])} seit dem "
+                        f"{desk.day_text(k33['start_date'], 'de_DE')} {desk.product_label(k33['product_id'])} von der "
+                        f"{desk.name(ids['lichtacker'])} ({k33['contract_number']}).",
+                        f"Rohstoffe für Halcyon sind nach dem Joint-Venture-Liefervertrag {fw['agreement_number']} "
+                        "zuerst der Eisenkrone anzufragen. Wir erwarten, dass künftige Rohstoffabrufe wieder über den "
+                        "Rahmen laufen."],
+            direction="seller_to_buyer", confidentiality="confidential", refs=desk.framework_refs(fw),
+            response_required=1, storyline="V9")
+        moment = at("2058-10-14")
+        desk.add(moment=moment, letter_type="breach_warning", sender=who(119, "corvane", moment, "relations", "V9"),
+                 recipient=who(170, "eisenkrone", moment, "relations", "V9"),
+                 subject=desk.subject("breach_warning", "en_US", f"Re: {fw['agreement_number']}"),
+                 paragraphs=[f"we have reviewed your letter. {k33['contract_number']} covers a grade that was not "
+                             f"offered under {fw['agreement_number']}, so we see no breach.",
+                             "As a gesture of goodwill, we will not extend the follow-up contract "
+                             f"{k39['contract_number']} beyond its current call-offs."],
+                 direction="buyer_to_seller", confidentiality="confidential", refs=desk.framework_refs(fw),
+                 reply_to=warning, storyline="V9")
+        desk.contract_termination(k39, sender_side=ids["corvane"], storyline="V9",
+                                  extra=["As announced to Eisenkrone, we are winding down raw material purchases "
+                                         "outside our framework agreements."])
+        note("V9: Antwort auf 2058-10-14 (nach Beginn von LAK-VTR-2058-0039); die Stornierung folgt laut Daten erst "
+             "nach dem letzten Abruf (2059-03-03)")
+
+    # V10 – offenes Gerücht Driftwood → Helix über Ravenmoor
+    r = rivalry("ravenmoor", "helix")
+    fw = framework("RCS-MSA-2058-01")
+    if not missing("V10", r, fw):
+        moment = at("2058-09-12")
+        desk.add(moment=moment, letter_type="rumor", sender=who(26, "driftwood", moment, "relations", "V10"),
+                 recipient=who(293, "helix", moment, "executive", "V10"),
+                 subject=desk.subject("rumor", "en_US", "Ravenmoor in Kharon"),
+                 paragraphs=["a word of warning from a long-standing partner: Ravenmoor's new escort framework with "
+                             f"you ({fw['agreement_number']}) is said to be only a foothold. Their dispatchers are "
+                             "reportedly approaching your customers in Kharon directly."],
+                 direction="lateral", confidentiality="confidential",
+                 refs={"rivalry_id": r["rivalry_id"], "framework_agreement_id": fw["framework_agreement_id"]},
+                 is_accurate=None, storyline="V10")
+
+    # V11 – Preisnachlass CCI-MSA-2057-01/A2 nach Ereignis 36
+    a, event36 = amendment("CCI-MSA-2057-01/A2"), desk.events.get(36)
+    if not missing("V11", a, event36):
+        desk.amendment_letters(a, offer_recipient=170, storyline="V11",
+                               extra_offer=[f"After the second failure at {desk.station_name(event36['station_id'])} "
+                                            f"({desk.day_text(event36['event_date'], 'en_US')}) we offer this price "
+                                            "reduction as a gesture of goodwill."])
+
+    # V12 – Volumenerhöhung GFW-RV-2057-01/N3
+    a, k173 = amendment("GFW-RV-2057-01/N3"), contract("HMX-CTR-2058-0173")
+    if not missing("V12", a, k173):
+        desk.amendment_letters(a, offer_sender=332, reply_recipient=332, storyline="V12",
+                               extra_offer=[f"After the failed spot delivery {k173['contract_number']} we need "
+                                            "additional hull and drive parts in Kharon at short notice."])
+
+    # V13 – Verzugsbeschwerde und Strafbescheid HMX-CTR-2058-0159
+    k159, order = contract("HMX-CTR-2058-0159"), order_of("HMX-SHP-2059-01012")
+    penalty159 = None
+    if not missing("V13", k159, order):
+        desk.delay_complaint(order, day=d("2059-01-18"), sender_id=47, recipient_id=332, storyline="V13")
+        penalty159 = desk.penalty_notice(k159, day=d("2059-01-25"), sender_id=38, recipient_id=293, storyline="V13")
+
+    # V14 – Gerücht Täsche → Kuppelwerk, Angebot und Absage (Vorkaufsrecht Helix)
+    fw1 = framework("HMX-MSA-2057-01")
+    partnership = desk.active_pair.get((ids["kuppelwerk"], ids["lichtacker"]))
+    kuppel_offer = None
+    if not missing("V14", penalty159, fw1, partnership):
+        moment = at("2059-01-27", earliest=penalty159.sent_at)
+        leaker = who(43, "lichtacker", moment, "intelligence", "V14")
+        rumor = desk.add(
+            moment=moment, letter_type="rumor", sender=leaker, recipient=contact("kuppelwerk", moment, "intelligence",
+                                                                                 "lichtacker"),
+            subject=desk.subject("rumor", "de_DE", "Industriegüter Tauvel"),
+            paragraphs=[f"unter uns: Für {k159['contract_number']} haben wir der Helix gerade "
+                        f"{desk.money(penalty159.amount or 0, 'de_DE')} Vertragsstrafe in Rechnung gestellt. Im "
+                        f"Vorstand wächst der Unmut über den Rahmen {fw1['agreement_number']}. Wer jetzt "
+                        "Industriegüter anbietet, findet offene Ohren."],
+            direction="lateral", confidentiality="confidential",
+            refs={"contract_id": k159["contract_id"], "framework_agreement_id": fw1["framework_agreement_id"]},
+            amount=penalty159.amount, is_accurate=1, leaked_by=leaker["employee_id"] if leaker else None,
+            leaked_to=ids["kuppelwerk"], refers_to=penalty159, storyline="V14")
+        if rumor is not None:
+            penalty159.leak_status, penalty159.leaked_by = "leaked", rumor.sender_employee_id
+            penalty159.leaked_to = ids["kuppelwerk"]
+            moment = at("2059-01-28", earliest=rumor.sent_at)
+            kuppel_offer = desk.add(
+                moment=moment, letter_type="offer", sender=contact("kuppelwerk", moment, "relations", "lichtacker"),
+                recipient=who(41, "lichtacker", moment, "relations", "V14"),
+                subject=desk.subject("offer", "de_DE", "Verbundstahl und Habitatbaustoffe"),
+                paragraphs=["wir hören, dass Ihre Versorgung mit Industriegütern aus Kharon zuletzt holprig war. Die "
+                            f"{desk.name(ids['kuppelwerk'])} bietet Verbundstahl und Habitatbaustoffe ab Aurelis zu "
+                            "Festpreisen und mit garantierten Lieferfenstern an."],
+                direction="seller_to_buyer", refs={"partnership_id": partnership["partnership_id"]},
+                response_required=1, storyline="V14")
+            moment = at("2059-02-05", earliest=kuppel_offer.sent_at if kuppel_offer else None)
+            desk.add(moment=moment, letter_type="offer_rejection",
+                     sender=who(41, "lichtacker", moment, "relations", "V14"),
+                     recipient=desk.employees.get(kuppel_offer.sender_employee_id) if kuppel_offer else None,
+                     subject=desk.subject("offer_rejection", "de_DE", "Verbundstahl und Habitatbaustoffe"),
+                     paragraphs=["vielen Dank für Ihr Angebot. Für Industriegüter gilt bis auf Weiteres das "
+                                 f"Vorkaufsrecht der {desk.name(ids['helix'])} aus dem Rahmenvertrag "
+                                 f"{fw1['agreement_number']}. Wir kommen auf Sie zu, sobald diese Bindung entfällt."],
+                     direction="buyer_to_seller", refs={"partnership_id": partnership["partnership_id"]},
+                     reply_to=kuppel_offer, storyline="V14")
+
+    # V15 – Helium-3-Verzug HMX-CTR-2058-0131, Strafbescheid, Nachträge A6/A7
+    k131, order = contract("HMX-CTR-2058-0131"), order_of("HMX-SHP-2059-01094")
+    if not missing("V15", k131, order, amendment("HMX-MSA-2057-02/A6"), amendment("HMX-MSA-2057-02/A7")):
+        desk.delay_complaint(order, day=d("2059-03-07"), sender_id=123, recipient_id=308, storyline="V15")
+        penalty = desk.penalty_notice(k131, day=d("2059-03-12"), sender_id=115, recipient_id=293, storyline="V15")
+        for number in ("HMX-MSA-2057-02/A6", "HMX-MSA-2057-02/A7"):
+            desk.amendment_letters(amendment(number), offer_sender=115, offer_recipient=293, reply_sender=293,
+                                   reply_recipient=115, thread=penalty, storyline="V15",
+                                   extra_offer=[f"After the late Helium-3 deliveries under {k131['contract_number']} "
+                                                "we will source Helium-3 for Halcyon elsewhere."])
+
+    # V16 – Abmahnung und Verzicht auf das Vorkaufsrecht HMX-MSA-2057-01/A5
+    k139, a = contract("HMX-CTR-2058-0139"), amendment("HMX-MSA-2057-01/A5")
+    k043 = contract("HMX-CTR-2057-0043")
+    if not missing("V16", k139, a, k043, k159):
+        booking = desk.penalties.get(k139["contract_id"])
+        moment = at("2059-03-10", earliest=booking["last_arrival"] if booking else None)
+        warning = desk.add(
+            moment=moment, letter_type="breach_warning", sender=who(41, "lichtacker", moment, "relations", "V16"),
+            recipient=who(332, "helix", moment, "relations", "V16"),
+            subject=desk.subject("breach_warning", "de_DE", f"{k139['contract_number']} – Vorkaufsrecht"),
+            paragraphs=[f"mit {k139['contract_number']} ist nach {k043['contract_number']} und "
+                        f"{k159['contract_number']} bereits der dritte Industriegüter-Abruf aus dem Rahmen "
+                        f"{fw1['agreement_number']} verspätet.",
+                        "Das Vorkaufsrecht der Helix für Industriegüter halten wir unter diesen Umständen nicht mehr "
+                        "für zumutbar und schlagen den Verzicht darauf vor."],
+            direction="buyer_to_seller", confidentiality="confidential", refs=desk.contract_refs(k139),
+            response_required=1, storyline="V16")
+        desk.amendment_letters(a, offer_sender=41, offer_recipient=332, reply_sender=332, reply_recipient=41,
+                               thread=warning, storyline="V16")
+
+    # V17 – Baustoffrahmen KHB-RV-2059-01 (Gegenangebot vor der Unterzeichnung 2059-03-02)
+    fw = framework("KHB-RV-2059-01")
+    if not missing("V17", fw):
+        fid = fw["framework_agreement_id"]
+        moment = at("2059-02-12", earliest=kuppel_offer.sent_at if kuppel_offer else None)
+        offer = desk.framework_letter(fw, "offer", moment, contact("kuppelwerk", moment, "executive", "lichtacker"),
+                                      who(41, "lichtacker", moment, "relations", "V17"), storyline="V17",
+                                      claim=("fw_thread", fid),
+                                      extra=["Die Lieferungen beginnen erst, wenn das Vorkaufsrecht der Helix für "
+                                             "Industriegüter entfallen ist."])
+        moment = at("2059-02-18")
+        counter = desk.framework_letter(fw, "counter_offer", moment, who(41, "lichtacker", moment, "relations", "V17"),
+                                        desk.employees.get(offer.sender_employee_id) if offer else None,
+                                        reply_to=offer, storyline="V17",
+                                        extra=["Wir unterzeichnen unter der Bedingung, dass der Rahmen erst am "
+                                               f"{desk.day_text(fw['start_date'], 'de_DE')} beginnt; über die "
+                                               "Aufhebung des Vorkaufsrechts verhandeln wir mit der Helix."])
+        moment = at(fw["start_date"])
+        desk.framework_letter(fw, "contract_confirmation", moment, who(38, "lichtacker", moment, "executive", "V17"),
+                              who(fw["seller_signatory_id"], "kuppelwerk", moment, "executive", "V17"),
+                              reply_to=counter or offer, storyline="V17", claim=("fw_confirm", fid))
+        note("V17: Gegenangebot auf 2059-02-18 vorgezogen (Unterzeichnung 2059-03-02 laut Daten)")
+
+    # V18 – Helium-3-Rahmen EFF-MSA-2059-01 (Angebot vor der Unterzeichnung 2059-03-02)
+    fw = framework("EFF-MSA-2059-01")
+    if not missing("V18", fw):
+        fid = fw["framework_agreement_id"]
+        moment = at("2059-02-16")
+        offer = desk.framework_letter(fw, "offer", moment, contact("emberline", moment, "executive", "corvane"),
+                                      who(123, "corvane", moment, "station", "V18"), storyline="V18",
+                                      claim=("fw_thread", fid),
+                                      extra=["Deliveries can start once your buyer exclusivity for energy under "
+                                             "HMX-MSA-2057-02 ends on March 15, 2059."])
+        moment = at(fw["start_date"])
+        desk.framework_letter(fw, "contract_confirmation", moment, who(115, "corvane", moment, "executive", "V18"),
+                              who(fw["seller_signatory_id"], "emberline", moment, "executive", "V18"),
+                              reply_to=offer, storyline="V18", claim=("fw_confirm", fid))
+        note("V18: Angebot auf 2059-02-16 vorgezogen (Unterzeichnung 2059-03-02 laut Daten)")
+
+    # V19 – Kaltangebot Kometenpost nach dem Verzug HMX-CTR-2059-0197
+    k197 = contract("HMX-CTR-2059-0197")
+    if not missing("V19", k197):
+        moment = at("2059-05-12")
+        desk.add(moment=moment, letter_type="offer", sender=contact("kometenpost", moment, "relations", "lichtacker"),
+                 recipient=who(49, "lichtacker", moment, "station", "V19"),
+                 subject=desk.subject("offer", "de_DE", "Eilkurier nach Tauvel"),
+                 paragraphs=[f"die Lieferung {k197['contract_number']} an den "
+                             f"{desk.station_name(k197['destination_station_id'])} kam erst nach Fristablauf an – "
+                             "davon war im ganzen Sektor zu hören.",
+                             f"Die {desk.name(ids['kometenpost'])} bringt Eilsendungen bis 5 t in unter 48 Stunden zu "
+                             "Ihren Stationen, zum Festpreis und mit Haftung für Verzug. Wir würden uns über einen "
+                             "Probeauftrag freuen."],
+                 direction="seller_to_buyer", confidentiality="public", response_required=1, storyline="V19")
+
+    # V20 – vertraulicher Hinweis Outmark → Slavko Geisel (Vorgeschichte zu Fund 52)
+    licence = next((p for p in desk.partnerships.values()
+                    if (p["company_id"], p["partner_company_id"]) == (ids["outmark"], ids["feldspat"])), None)
+    if not missing("V20", licence):
+        moment = at("2059-05-20")
+        sender = contact("outmark", moment, "intelligence", "feldspat")
+        leaked = sender["employee_id"] if sender and satisfies_leak_rule(sender) else None
+        desk.add(moment=moment, letter_type="confidential_tip", sender=sender,
+                 recipient=who(16, "feldspat", moment, "relations", "V20"),
+                 subject=desk.subject("confidential_tip", "en_US", "survey grid Becker"),
+                 paragraphs=["our survey drones charted an unusual quartz anomaly near Becker mining station while "
+                             "our licence with Feldspat was still running. The data never reached your board. If you "
+                             "want the coordinates, they are yours – for a share of the claim."],
+                 direction="lateral", confidentiality="confidential",
+                 refs={"partnership_id": licence["partnership_id"]},
+                 is_accurate=1, leaked_by=leaked, leaked_to=ids["feldspat"] if leaked else None, storyline="V20")
+
+    # V21 – offenes Gerücht Brandon Jones → Ravenmoor (Geleitschutzbrüche)
+    r = rivalry("ravenmoor", "helix")
+    hits = escort_breaches(desk, set(desk.world.legacy_company_ids()), "2059-06-10")
+    own = [h for h in hits if ids["helix"] in (h["company_id"], h["partner_company_id"])]
+    if not missing("V21", r, own[-1] if own else None):
+        moment = at("2059-06-10")
+        leaker = who(445, "helix", moment, "finance", "V21")
+        numbers = ", ".join(h["contract_number"] for h in hits)
+        desk.add(moment=moment, letter_type="rumor", sender=leaker,
+                 recipient=contact("ravenmoor", moment, "intelligence", "helix"),
+                 subject=desk.subject("rumor", "en_US", "escort gaps in Kharon"),
+                 paragraphs=[f"between us: {len(hits)} contracts in the core network were breached because freighters "
+                             f"sat waiting for escorts ({numbers}), {len(own)} of them on Helix lanes. Finance is "
+                             "tallying the penalties; nobody upstairs wants to admit the escort gap."],
+                 direction="to_rival", confidentiality="confidential",
+                 refs={"rivalry_id": r["rivalry_id"], "contract_id": own[-1]["contract_id"]}, is_accurate=None,
+                 leaked_by=leaker["employee_id"] if leaker and satisfies_leak_rule(leaker) else None,
+                 leaked_to=ids["ravenmoor"], storyline="V21")
+        if len(hits) != 8:
+            note(f"V21: {len(hits)} statt 8 Geleitschutzbrüche bis 2059-06-10 (der achte, EKM-VTR-2059-0167, bricht "
+                 "erst im Oktober 2059)")
+
+    # V22 – Abnahmerahmen Quantenquarz FSP-RV-2059-01 gegen die Schulden (K10)
+    fw = framework("FSP-RV-2059-01")
+    if not missing("V22", fw):
+        fid = fw["framework_agreement_id"]
+        moment = at("2059-06-18")
+        debts = overdue_orders(desk, ids["eisenkrone"], ids["feldspat"], moment.date()) if moment else []
+        offer = desk.framework_letter(
+            fw, "offer", moment, who(4, "feldspat", moment, "relations", "V22"),
+            who(170, "eisenkrone", moment, "relations", "V22"), storyline="V22", claim=("fw_thread", fid),
+            extra=[f"Zur Verrechnung Ihrer offenen Forderungen gegen uns – derzeit {len(debts)} Rechnungen über "
+                   f"{desk.money(sum(o['total_amount'] for o in debts), 'de_DE')} – bieten wir Ihnen Quantenquarz "
+                   "Becker bevorzugt an."])
+        moment = at(fw["start_date"])
+        debts = overdue_orders(desk, ids["eisenkrone"], ids["feldspat"], moment.date()) if moment else []
+        desk.framework_letter(
+            fw, "contract_confirmation", moment, who(168, "eisenkrone", moment, "executive", "V22"),
+            who(1, "feldspat", moment, "executive", "V22"), reply_to=offer, storyline="V22", claim=("fw_confirm", fid),
+            extra=[f"Unsere offenen Forderungen aus Lieferungen an Sie belaufen sich heute auf {len(debts)} Rechnungen "
+                   f"über {desk.money(sum(o['total_amount'] for o in debts), 'de_DE')}; Quarzlieferungen rechnen wir "
+                   "dagegen auf."])
+        note("V22: Angebot auf 2059-06-18 vorgezogen (Unterzeichnung 2059-07-02 laut Daten); Schuldenstand je "
+             "Schreiben aus den überfälligen Bestellungen berechnet")
+
+    # V23 – Preisnachlass RVF-RV-2058-02/N1 und Tipp Bauer → Koch (Fund 52)
+    a, event52 = amendment("RVF-RV-2058-02/N1"), desk.events.get(52)
+    if not missing("V23", a, event52):
+        desk.amendment_letters(a, offer_sender=175, storyline="V23",
+                               extra_offer=[f"Nach dem Rohstofffund an der {desk.station_name(event52['station_id'])} "
+                                            f"({desk.day_text(event52['event_date'], 'de_DE')}) fallen die Preise in "
+                                            "Brennus; wir erwarten eine entsprechende Anpassung."])
+        moment = at("2059-08-20")
+        leaker = who(170, "eisenkrone", moment, "relations", "V23")
+        desk.add(moment=moment, letter_type="confidential_tip", sender=leaker,
+                 recipient=who(4, "feldspat", moment, "relations", "V23"),
+                 subject=desk.subject("confidential_tip", "de_DE", "Preise Brennus"),
+                 paragraphs=[f"unter uns: Die {desk.name(ids['raureif'])} hat uns nach Ihrem Fund an der "
+                             f"{desk.station_name(event52['station_id'])} 6 % Nachlass gewährt "
+                             f"({a['amendment_number']}). Im Haus wird schon gerechnet, wie viel günstiger "
+                             "Quantenquarz Becker werden könnte – halten Sie Ihre Preise."],
+                 direction="lateral", confidentiality="confidential", refs={"event_id": event52["event_id"]},
+                 is_accurate=1, leaked_by=leaker["employee_id"] if leaker else None, leaked_to=ids["feldspat"],
+                 storyline="V23")
+
+    # V24 – Protest Outmark → Feldspat (Fund 52) und Antwort
+    r = rivalry("outmark", "feldspat")
+    if not missing("V24", r, event52):
+        moment = at("2059-07-28")
+        protest = desk.add(
+            moment=moment, letter_type="protest", sender=contact("outmark", moment, "executive", "feldspat"),
+            recipient=who(1, "feldspat", moment, "executive", "V24"),
+            subject=desk.subject("protest", "en_US", f"claim at {desk.station_name(event52['station_id'])}"),
+            paragraphs=[f"the “discovery” at {desk.station_name(event52['station_id'])} on "
+                        f"{desk.day_text(event52['event_date'], 'en_US')} lies squarely on survey grids charted by "
+                        "Outmark under our former licence. We demand a share of the claim and reserve all legal "
+                        "steps."],
+            direction="to_rival", confidentiality="public",
+            refs={"rivalry_id": r["rivalry_id"], "event_id": event52["event_id"]}, response_required=1,
+            storyline="V24", claim=("protest", r["rivalry_id"]))
+        if protest is not None:
+            desk.protest_reply(protest, r, day=d("2059-08-05"), sender_id=1, storyline="V24",
+                               extra=["Die Lizenz endete im Juni 2058; der Fund beruht auf eigenen Bohrungen."])
+
+    # V25 – Strafbescheid EKM-VTR-2059-0162
+    k = contract("EKM-VTR-2059-0162")
+    if not missing("V25", k):
+        complaint_first(k)
+        desk.penalty_notice(k, day=d("2059-08-05"), sender_id=293, recipient_id=168, storyline="V25")
+
+    # V26 – Tipp vor der Razzia 58, Protest Driftwood, interne Verdachtsnotiz
+    r, event58 = rivalry("ravenmoor", "driftwood"), desk.events.get(58)
+    if not missing("V26", r, event58):
+        moment = at("2059-08-27")
+        leaker = who(29, "driftwood", moment, "station", "V26")
+        tip = desk.add(moment=moment, letter_type="confidential_tip", sender=leaker,
+                       recipient=contact("ravenmoor", moment, "intelligence", "driftwood"),
+                       subject=desk.subject("confidential_tip", "en_US", desk.station_name(event58["station_id"])),
+                       paragraphs=["next week a load of restricted goods is due at "
+                                   f"{desk.station_name(event58['station_id'])}. The security grid will be down for "
+                                   "maintenance on the night of September 1. Payment as agreed, via the usual "
+                                   "channel."],
+                       direction="to_rival", confidentiality="confidential", refs={"rivalry_id": r["rivalry_id"]},
+                       is_accurate=1, leaked_by=leaker["employee_id"] if leaker else None, leaked_to=ids["ravenmoor"],
+                       storyline="V26")
+        moment = at("2059-09-03")
+        desk.add(moment=moment, letter_type="protest", sender=who(23, "driftwood", moment, "executive", "V26"),
+                 recipient=contact("ravenmoor", moment, "executive", "driftwood"),
+                 subject=desk.subject("protest", "en_US", f"raid on {desk.station_name(event58['station_id'])}"),
+                 paragraphs=[f"on {desk.day_text(event58['event_date'], 'en_US')} armed units in Ravenmoor's pay "
+                             f"raided {desk.station_name(event58['station_id'])} and seized cargo belonging to our "
+                             "customers. We protest in the strongest terms and will hold Ravenmoor liable for every "
+                             "lost credit."],
+                 direction="to_rival", confidentiality="public",
+                 refs={"rivalry_id": r["rivalry_id"], "event_id": event58["event_id"]}, response_required=1,
+                 storyline="V26", claim=("protest", r["rivalry_id"]))
+        moment = at("2059-09-10")
+        desk.add(moment=moment, letter_type="internal_memo", sender=who(33, "driftwood", moment, "station", "V26"),
+                 recipient=who(23, "driftwood", moment, "executive", "V26"),
+                 subject=desk.subject("internal_memo", "en_US", "who knew about the raid"),
+                 paragraphs=["word on the docks is that someone tipped off Ravenmoor before the raid. Only a handful "
+                             "of people knew the maintenance schedule of the security grid – I suggest we start with "
+                             "the station managers."],
+                 direction="internal", confidentiality="confidential", refs={"event_id": event58["event_id"]},
+                 refers_to=tip, storyline="V26")
+        note("V26: Gerücht Hines → Gould als interne Notiz umgesetzt (beide Driftwood; firmenintern nur internal_memo)")
+
+    # V27 – Sammelmahnung 2. Stufe Eisenkrone → Feldspat (K3)
+    order = order_no("EKM-BST-2059-01903")
+    if not missing("V27", order):
+        moment = at("2059-10-14")
+        debts = overdue_orders(desk, ids["eisenkrone"], ids["feldspat"], moment.date()) if moment else []
+        shipment = desk.shipment_by_order[order["order_id"]]
+        due = datetime.fromisoformat(shipment["actual_arrival_date"]).date() + timedelta(days=PAYMENT_TERMS_DAYS)
+        total = sum(o["total_amount"] for o in debts)
+        listed = ", ".join(o["order_number"] for o in debts[-4:])
+        desk.add(moment=moment, letter_type="payment_reminder", sender=who(169, "eisenkrone", moment, "finance", "V27"),
+                 recipient=who(2, "feldspat", moment, "finance", "V27"),
+                 subject=f"{REMINDER_LABELS[1][0]}: Sammelmahnung {len(debts)} Rechnungen",
+                 paragraphs=[f"trotz unserer Erinnerungen sind {len(debts)} Rechnungen über zusammen "
+                             f"{desk.money(total, 'de_DE')} offen, zuletzt {listed}. Die Rechnung zu "
+                             f"{order['order_number']} ist seit dem {desk.day_text(due, 'de_DE')} fällig.",
+                             "Wir bitten um Ausgleich innerhalb von zehn Tagen oder um einen verbindlichen "
+                             "Zahlungsplan; Quarzlieferungen aus FSP-RV-2059-01 rechnen wir an."],
+                 direction="seller_to_buyer",
+                 refs={"order_id": order["order_id"], "shipment_id": shipment["shipment_id"]},
+                 amount=total, due_date=fmt_date(due), response_required=1, sentiment="negative", storyline="V27",
+                 claim=("reminder", order["order_id"], 1))
+
+    # V28 – Seip: Beschwerde, Leck, neuer Energierahmen, Teilkündigung, abgelehnter Preisnachlass
+    k167, fw_old, fw_new = contract("EKM-VTR-2059-0167"), framework("EKM-RV-2057-03"), framework("EFF-MSA-2059-02")
+    n6, n7 = amendment("EKM-RV-2057-03/N6"), amendment("EKM-RV-2057-03/N7")
+    if not missing("V28", k167, fw_old, fw_new, n6, n7):
+        complaint = desk.delay_complaint(desk.late_contract_shipment(k167), day=d("2059-10-11"), sender_id=45,
+                                         recipient_id=170, storyline="V28")
+        moment = at("2059-10-12", earliest=complaint.sent_at if complaint else None)
+        leaker = who(83, "lichtacker", moment, "logistics", "V28")
+        tip = desk.add(moment=moment, letter_type="confidential_tip", sender=leaker,
+                       recipient=contact("emberline", moment, "intelligence", "lichtacker"),
+                       subject=desk.subject("confidential_tip", "de_DE", "Energie für Seip"),
+                       paragraphs=[f"Seip hat nach {k167['contract_number']} genug von der Eisenkrone: Die "
+                                   "Brennstoffzellen kamen zu spät, der Vorstand denkt über eine Teilkündigung der "
+                                   "Energieversorgung nach. Ein Angebot für die Agrarstation Seip kommt jetzt auf den "
+                                   "richtigen Tisch."],
+                       direction="lateral", confidentiality="confidential", refs={"contract_id": k167["contract_id"]},
+                       is_accurate=1, leaked_by=leaker["employee_id"] if leaker else None, leaked_to=ids["emberline"],
+                       refers_to=complaint, storyline="V28")
+        if tip is not None and complaint is not None:
+            complaint.leak_status, complaint.leaked_by = "leaked", tip.sender_employee_id
+            complaint.leaked_to = ids["emberline"]
+        fid = fw_new["framework_agreement_id"]
+        moment = at("2059-10-13", earliest=tip.sent_at if tip else None)
+        offer = desk.framework_letter(fw_new, "offer", moment, contact("emberline", moment, "executive", "lichtacker"),
+                                      who(45, "lichtacker", moment, "station", "V28"), storyline="V28",
+                                      claim=("fw_thread", fid),
+                                      extra=["We can take over the energy supply for Seip from mid-November."])
+        desk.amendment_letters(n6, offer_sender=38, offer_recipient=168, storyline="V28",
+                               extra_offer=[f"Nach den wiederholten Verspätungen (zuletzt {k167['contract_number']}) "
+                                            "beziehen wir Energie künftig aus dem Rahmen "
+                                            f"{fw_new['agreement_number']}."])
+        desk.amendment_letters(n7, offer_sender=170, offer_recipient=41, reply_sender=38, reply_recipient=170,
+                               storyline="V28",
+                               extra_offer=["Um die Energieversorgung von Seip zu halten, bieten wir einen Nachlass "
+                                            "auf alle Energieabrufe an."],
+                               extra_reply=[f"Die Energie für Seip ist ab Januar über {fw_new['agreement_number']} "
+                                            "gesichert."])
+        moment = at(fw_new["start_date"])
+        desk.framework_letter(fw_new, "contract_confirmation", moment,
+                              who(38, "lichtacker", moment, "executive", "V28"),
+                              who(fw_new["seller_signatory_id"], "emberline", moment, "executive", "V28"),
+                              reply_to=offer, storyline="V28", claim=("fw_confirm", fid))
+
+    # V29 – Lagebild Isolde und Kaltangebot Morgengrund nach den Ernteausfällen 61/71
+    r, event61, event71 = rivalry("lichtacker", "pionierwerk"), desk.events.get(61), desk.events.get(71)
+    if not missing("V29", r, event61, event71):
+        moment = at("2059-11-05")
+        desk.add(moment=moment, letter_type="internal_memo",
+                 sender=who(43, "lichtacker", moment, "intelligence", "V29"),
+                 recipient=who(38, "lichtacker", moment, "executive", "V29"),
+                 subject=desk.subject("internal_memo", "de_DE", "Pionierwerk in Isolde"),
+                 paragraphs=[f"die {desk.name(ids['pionierwerk'])} nutzt den Ernteausfall am "
+                             f"{desk.station_name(event61['station_id'])} "
+                             f"({desk.day_text(event61['event_date'], 'de_DE')}), um Siedler in Isolde mit eigenen "
+                             "Rationen zu versorgen und alte Pachtflächen zu belegen. Ich empfehle, die "
+                             "Pachtansprüche jetzt schriftlich geltend zu machen."],
+                 direction="internal", confidentiality="confidential",
+                 refs={"rivalry_id": r["rivalry_id"], "event_id": event61["event_id"]}, storyline="V29")
+        moment = at("2059-12-15")
+        desk.add(moment=moment, letter_type="offer", sender=contact("morgengrund", moment, "relations", "lichtacker"),
+                 recipient=who(49, "lichtacker", moment, "station", "V29"),
+                 subject=desk.subject("offer", "de_DE", "Getreide und Konserven aus Isolde"),
+                 paragraphs=[f"nach dem erneuten Ernteausfall am {desk.station_name(event71['station_id'])} "
+                             f"({desk.day_text(event71['event_date'], 'de_DE')}) bietet die "
+                             f"{desk.name(ids['morgengrund'])} Getreide und Konserven aus Isolde an – Lieferung binnen "
+                             "drei Wochen."],
+                 direction="seller_to_buyer", confidentiality="public", refs={"event_id": event71["event_id"]},
+                 response_required=1, storyline="V29")
+
+    # V30 – Quarantäne HMX-CTR-2059-0242: Beschwerde, Erklärung, Strafbescheid
+    k242 = contract("HMX-CTR-2059-0242")
+    if not missing("V30", k242):
+        late = desk.late_contract_shipment(k242)
+        complaint = desk.delay_complaint(late, day=d("2059-11-29"), sender_id=174, recipient_id=302, storyline="V30")
+        explanation = desk.delay_notice(late, day=d("2059-12-02"), sender_id=302, reply_to=complaint, storyline="V30",
+                                        extra=["Medical supplies of this grade require a full sterile check at "
+                                               "destination; we apologise for the delay and will absorb the screening "
+                                               "fees."])
+        if explanation is None:
+            note("V30: Lieferung ohne Zwischenfall im Datenstand, Erklärung entfällt")
+        desk.penalty_notice(k242, day=d("2059-12-08"), sender_id=169, recipient_id=294, storyline="V30")
+
+    # V31 – Aussetzung CCI-MSA-2057-01 nach Ereignis 70 (9 Schreiben)
+    fw, a4, event70 = framework("CCI-MSA-2057-01"), amendment("CCI-MSA-2057-01/A4"), desk.events.get(70)
+    fw2, gfw_n4, k66 = framework("GFW-RV-2057-02"), amendment("GFW-RV-2057-02/N4"), contract("CVB-CTR-2059-0066")
+    r6 = rivalry("cindervale", "helix")
+    if not missing("V31", fw, a4, event70, fw2, gfw_n4, k66, r6):
+        memo = desk.event_memo(event70, day=d("2059-12-01"), sender_id=178, recipient_id=168, storyline="V31",
+                               extra=["Es ist der dritte Ausfall der Cindervale-Steuerkerne nach Februar und November "
+                                      "2058."])
+        moment = at("2059-12-02", earliest=memo.sent_at if memo else None)
+        warning = desk.add(
+            moment=moment, letter_type="breach_warning", sender=who(168, "eisenkrone", moment, "executive", "V31"),
+            recipient=contact("cindervale", moment, "executive", "eisenkrone"),
+            subject=desk.subject("breach_warning", "de_DE", f"{fw['agreement_number']} – dritter Ausfall"),
+            paragraphs=[f"am {desk.day_text(event70['event_date'], 'de_DE')} ist die KI-Leitsteuerung der "
+                        f"{desk.station_name(event70['station_id'])} zum dritten Mal ausgefallen. Wir mahnen die "
+                        f"zugesicherte Verfügbarkeit aus {fw['agreement_number']} ab.",
+                        "Legt die Cindervale bis zum 15.12.2059 keine belastbare Ursachenanalyse vor, setzen wir den "
+                        f"Rahmen aus und behalten uns die Kündigung mit {fw['notice_period_days']} Tagen Frist vor."],
+            direction="buyer_to_seller", confidentiality="confidential",
+            refs=desk.framework_refs(fw, event_id=event70["event_id"]), response_required=1, storyline="V31")
+        moment = at("2059-12-03")
+        bauer = who(170, "eisenkrone", moment, "relations", "V31")
+        desk.add(moment=moment, letter_type="internal_memo",
+                 sender=who(171, "eisenkrone", moment, "intelligence", "V31"),
+                 recipient=who(172, "eisenkrone", moment, "intelligence", "V31"),
+                 subject=desk.subject("internal_memo", "de_DE", "Lagebild Cindervale"),
+                 paragraphs=["die Cindervale schichtet Kapazität in die Navigationsplattform mit der "
+                             f"{desk.name(ids['graufalk'])} ({fw2['agreement_number']}) um. Eine Kündigung träfe sie "
+                             "kaum; eine Aussetzung hält uns Optionen offen.",
+                             "Achtung: Unsere Korrespondenz mit Cindervale ist offenbar nicht dicht."],
+                 direction="internal", confidentiality="confidential",
+                 refs={"framework_agreement_id": fw["framework_agreement_id"]}, storyline="V31",
+                 copies=[(bauer["employee_id"], "cc")] if bauer else None)
+        moment = at("2059-12-04")
+        leaker = who(299, "helix", moment, "intelligence", "V31")
+        desk.add(moment=moment, letter_type="rumor", sender=leaker,
+                 recipient=contact("cindervale", moment, "intelligence", "helix"),
+                 subject=desk.subject("rumor", "en_US", "replacement cores for Förster"),
+                 paragraphs=["Eisenkrone has asked our Sol desk for replacement AI control cores for Förster. Nothing "
+                             "is signed yet – but if Helix steps in, your framework with Eisenkrone is history."],
+                 direction="to_rival", confidentiality="confidential", refs={"rivalry_id": r6["rivalry_id"]},
+                 is_accurate=None, leaked_by=leaker["employee_id"] if leaker else None, leaked_to=ids["cindervale"],
+                 storyline="V31")
+        desk.amendment_letters(a4, offer_sender=168, thread=warning, reply_recipient=170, storyline="V31",
+                               extra_offer=["Anlass ist der dritte Ausfall der KI-Leitsteuerung an der "
+                                            "Industriestation Förster."],
+                               extra_reply=["We accept the suspension under protest and without prejudice; our "
+                                            "analysis points to operating errors at Förster."])
+        moment = at("2059-12-08", earliest=warning.sent_at if warning else None)
+        desk.add(moment=moment, letter_type="breach_warning",
+                 sender=desk.employees.get(warning.recipient_employee_id) if warning else None,
+                 recipient=who(168, "eisenkrone", moment, "executive", "V31"),
+                 subject=desk.subject("breach_warning", "en_US", f"Re: {fw['agreement_number']}"),
+                 paragraphs=["we reject the allegation of a warranty breach. The cores at Förster were operated "
+                             "outside the agreed cooling parameters, as our telemetry shows."],
+                 direction="seller_to_buyer", confidentiality="confidential",
+                 refs=desk.framework_refs(fw, event_id=event70["event_id"]), reply_to=warning, storyline="V31")
+        moment = at("2059-12-10")
+        leaker = who(120, "corvane", moment, "intelligence", "V31")
+        desk.add(moment=moment, letter_type="confidential_tip", sender=leaker,
+                 recipient=contact("cindervale", moment, "intelligence", "corvane"),
+                 subject=desk.subject("confidential_tip", "en_US", "robotics at Hande"),
+                 paragraphs=["Eisenkrone is already testing our robotics units at "
+                             f"{desk.station_name(k66['destination_station_id'])} ({k66['contract_number']}) as a "
+                             "stopgap for your cores. Their partner relations team is pushing for it internally."],
+                 direction="lateral", confidentiality="confidential", refs={"contract_id": k66["contract_id"]},
+                 is_accurate=1, leaked_by=leaker["employee_id"] if leaker else None, leaked_to=ids["cindervale"],
+                 storyline="V31")
+        desk.amendment_letters(gfw_n4, storyline="V31",
+                               extra_offer=["After recent leaks of our correspondence with Eisenkrone we propose a "
+                                            "stricter confidentiality clause for all data exchanged under the "
+                                            "alliance."])
+
+    # V32 – 3. Mahnung EKM-BST-2059-01408 (K5)
+    order = order_no("EKM-BST-2059-01408")
+    if not missing("V32", order):
+        desk.payment_reminders(order, days=(None, None, d("2059-03-29")), sender_id=169, recipient_id=118,
+                               storyline="V32")
+
+    # V33 – Angebot und Absage zum Entwurf EKM-VTR-2060-0230
+    k230 = contract("EKM-VTR-2060-0230")
+    if not missing("V33", k230):
+        offer = desk.contract_offer(k230, day=d("2059-12-18"), sender_id=170, recipient_id=42, storyline="V33",
+                                    extra=["Energie ist ab dem 18.01.2060 nicht mehr Teil des Rahmens EKM-RV-2057-03; "
+                                           "wir bieten Ihnen daher einen separaten Dauerliefervertrag an."])
+        if offer is not None:
+            desk.offer_reply(offer, k230, "offer_rejection", day=d("2059-12-29"), sender_id=42, storyline="V33",
+                             extra=["Energie für Seip beziehen wir ab Januar aus dem Rahmen EFF-MSA-2059-02."])
+
+    # V34 – dreiseitiger Vorschlag Geleit und Liegeplätze nach Piratenangriff 74 (K2)
+    a2, n7h, event74 = amendment("RCS-MSA-2058-01/A2"), amendment("EKM-RV-2057-02/N7"), desk.events.get(74)
+    if not missing("V34", a2, n7h, event74):
+        first, _reply = desk.amendment_letters(
+            a2, offer_recipient=304, storyline="V34",
+            extra_offer=[f"After the pirate attack at {desk.station_name(event74['station_id'])} on "
+                         f"{desk.day_text(event74['event_date'], 'en_US')} we propose armed escorts for all convoys in "
+                         "the corridor, including Eisenkrone call-offs from Brennus, plus overflow berths at our "
+                         "trade station in Kharon for docking congestion."])
+        desk.amendment_letters(n7h, offer_sender=304, offer_recipient=170, refers_to=first, storyline="V34",
+                               extra_offer=["Forwarded for your review: Ravenmoor's escort proposal. Including the "
+                                            "clause in our framework would prevent a repeat of the escort waits on "
+                                            "EKM-VTR-2057-0043 and EKM-VTR-2058-0107."])
+
+    # V35 – Lieferavis, Verzögerung und Beschwerde EKM-BST-2059-02343
+    order = order_no("EKM-BST-2059-02343")
+    if not missing("V35", order):
+        desk.delivery_notice(order, day=d("2059-12-26"), sender_id=254, recipient_id=307, storyline="V35")
+        desk.delay_notice(order, day=d("2059-12-30"), sender_id=254, recipient_id=307, storyline="V35")
+        desk.delay_complaint(order, day=d("2059-12-31"), sender_id=370, recipient_id=170, storyline="V35")
+
+    # V36 – Anfrage Eilabrufe nach zwei Triebwerksschäden (K6), Nachtrag GFW-RV-2057-01/N4
+    a, fw = amendment("GFW-RV-2057-01/N4"), framework("GFW-RV-2057-01")
+    s1, s2 = desk.shipment_by_number.get("HMX-SHP-2059-01721"), desk.shipment_by_number.get("HMX-SHP-2059-01746")
+    if not missing("V36", a, fw, s1, s2):
+        o1, o2 = desk.orders[s1["order_id"]], desk.orders[s2["order_id"]]
+        moment = at("2059-12-31", earliest=max(datetime.fromisoformat(s1["departure_date"]),
+                                               datetime.fromisoformat(s2["departure_date"])))
+        desk.add(moment=moment, letter_type="inquiry", sender=who(332, "helix", moment, "relations", "V36"),
+                 recipient=contact("graufalk", moment, "relations", "helix"),
+                 subject=desk.subject("inquiry", "en_US", f"rush call-offs under {fw['agreement_number']}"),
+                 paragraphs=[f"two of our freighters suffered drive failures within a week ({s1['shipment_number']}, "
+                             f"+{fmt_number(desk.delay_hours(s1), 'en_US')} h, and {s2['shipment_number']}, orders "
+                             f"{o1['order_number']} and {o2['order_number']}).",
+                             "We would like to add a rush call-off clause for drive parts to "
+                             f"{fw['agreement_number']}: delivery within 72 hours against a surcharge. Draft amendment "
+                             f"{a['amendment_number']} is attached."],
+                 direction="buyer_to_seller", refs=desk.framework_refs(fw, amendment_id=a["amendment_id"]),
+                 response_required=1, storyline="V36", claim=("amend_offer", a["amendment_id"]))
+
+    # V37 – Zahlungserinnerung HMX-ORD-2059-01645
+    order = order_no("HMX-ORD-2059-01645")
+    if not missing("V37", order):
+        desk.payment_reminders(order, days=(d("2059-12-28"), None, None), sender_id=294, recipient_id=118,
+                               storyline="V37")
+
+    # V38 – Verzögerungsmeldung FSP-BST-2059-00111 (Quarantäne)
+    order = order_no("FSP-BST-2059-00111")
+    if not missing("V38", order):
+        desk.delay_notice(order, day=d("2059-12-30"), sender_id=9, recipient_id=179, storyline="V38")
+
+    # V39 – Leck Chavez → Cindervale, Abmahnung an Eisenkrone, Antwort Bauer (K1)
+    fw = framework("CCI-MSA-2057-01")
+    if not missing("V39", k66, fw, event36):
+        moment = at("2059-08-28")
+        leaker = who(120, "corvane", moment, "intelligence", "V39")
+        rumor = desk.add(
+            moment=moment, letter_type="rumor", sender=leaker,
+            recipient=contact("cindervale", moment, "intelligence", "corvane"),
+            subject=desk.subject("rumor", "en_US", f"robotics for {desk.station_name(k66['destination_station_id'])}"),
+            paragraphs=[f"heads-up: since {desk.day_text(k66['start_date'], 'en_US')} Corvane has been supplying "
+                        f"robotics units to Eisenkrone's {desk.station_name(k66['destination_station_id'])} under an "
+                        f"exclusive supply contract ({k66['contract_number']}, {k66['quantity']} units). That is high "
+                        "technology for Halcyon – your ground under the Eisenkrone framework."],
+            direction="lateral", confidentiality="confidential", refs={"contract_id": k66["contract_id"]},
+            is_accurate=1, leaked_by=leaker["employee_id"] if leaker else None, leaked_to=ids["cindervale"],
+            storyline="V39")
+        moment = at("2059-09-02", earliest=rumor.sent_at if rumor else None)
+        bauer = who(170, "eisenkrone", moment, "relations", "V39")
+        warning = desk.add(
+            moment=moment, letter_type="breach_warning",
+            sender=contact("cindervale", moment, "executive", "eisenkrone"),
+            recipient=who(168, "eisenkrone", moment, "executive", "V39"),
+            subject=desk.subject("breach_warning", "en_US", f"{fw['agreement_number']} – right of first refusal"),
+            paragraphs=[f"under framework agreement {fw['agreement_number']} Cindervale holds a right of first refusal "
+                        "for high technology supplied to Halcyon. We understand that Eisenkrone has awarded an "
+                        "exclusive robotics supply contract to a third party without consulting us.",
+                        "We formally object and expect to be consulted before any further award."],
+            direction="seller_to_buyer", confidentiality="confidential", refs=desk.framework_refs(fw),
+            response_required=1, refers_to=rumor, storyline="V39",
+            copies=[(bauer["employee_id"], "cc")] if bauer else None)
+        moment = at("2059-09-12", earliest=warning.sent_at if warning else None)
+        desk.add(moment=moment, letter_type="breach_warning", sender=who(170, "eisenkrone", moment, "relations", "V39"),
+                 recipient=desk.employees.get(warning.sender_employee_id) if warning else None,
+                 subject=desk.subject("breach_warning", "de_DE", f"Re: {fw['agreement_number']}"),
+                 paragraphs=["Ihr Schreiben weisen wir zurück. Nach den Ausfällen Ihrer Steuerkerne an der "
+                             f"{desk.station_name(event36['station_id'])} (Februar und November 2058) mussten wir für "
+                             f"die {desk.station_name(k66['destination_station_id'])} eine Ausweichlösung schaffen.",
+                             "Ein Vorkaufsrecht verpflichtet uns zur Anfrage, nicht zur Abnahme – und Ihr letztes "
+                             "Angebot lag 30 % über dem Markt."],
+                 direction="buyer_to_seller", confidentiality="confidential",
+                 refs=desk.framework_refs(fw, event_id=event36["event_id"]), reply_to=warning, storyline="V39")
+
+    # V40 – Verdacht gegen Erkan Hesse (das wahre Leck ist Täsche, V14)
+    hesse = employee(39)
+    if not missing("V40", kuppel_offer, k159, hesse):
+        moment = at("2059-06-04")
+        desk.add(moment=moment, letter_type="internal_memo", sender=who(38, "lichtacker", moment, "executive", "V40"),
+                 recipient=who(40, "lichtacker", moment, "finance", "V40"),
+                 subject=desk.subject("internal_memo", "de_DE", f"Weitergabe {k159['contract_number']}"),
+                 paragraphs=[f"die Kuppelwerk kannte unseren Strafbescheid zu {k159['contract_number']} schon wenige "
+                             "Tage nach Versand. Den Bescheid hatten nur Vorstand und Finanzbuchhaltung.",
+                             f"Bitte prüfen Sie die Zugriffe von {hesse['full_name']}; bis zur Klärung ist er von "
+                             "vertraulichen Vorgängen auszuschließen."],
+                 direction="internal", confidentiality="confidential", refs={"contract_id": k159["contract_id"]},
+                 refers_to=kuppel_offer, storyline="V40")
+
+    # V41 – Dörr verrät das Ausfallprotokoll Förster an Graufalk
+    r5 = rivalry("graufalk", "eisenkrone")
+    if not missing("V41", r5, event36):
+        moment = at("2058-11-20")
+        leaker = who(235, "eisenkrone", moment, "station", "V41")
+        desk.add(moment=moment, letter_type="confidential_tip", sender=leaker,
+                 recipient=contact("graufalk", moment, "intelligence", "eisenkrone"),
+                 subject=desk.subject("confidential_tip", "de_DE", "Ausfallprotokoll Förster"),
+                 paragraphs=[f"das Ausfallprotokoll der {desk.station_name(event36['station_id'])} vom "
+                             f"{desk.day_text(event36['event_date'], 'de_DE')} liegt mir vor: Die "
+                             "Cindervale-Steuerkerne sind wieder ausgefallen, die Fertigung steht voraussichtlich "
+                             f"{event36['duration_days']} Tage. Eisenkrone wird Werftteile nachkaufen müssen."],
+                 direction="to_rival", confidentiality="internal",
+                 refs={"event_id": event36["event_id"], "rivalry_id": r5["rivalry_id"]}, is_accurate=1,
+                 leaked_by=leaker["employee_id"] if leaker else None, leaked_to=ids["graufalk"], storyline="V41")
+
+
+def generate_correspondence(world: World) -> None:
+    """Erzeugt den Schriftverkehr aller 18 Firmen im eigenen Zufallsstrom (nach allen anderen Schritten).
+
+    Reihenfolge: verankerte Vorgänge (nur Seed 42), Rahmenverhandlungen, Nachträge, Einzelverträge,
+    Verzug und Vertragsstrafen, Lieferavis, Mahnungen, Ereignisnotizen, Rivalitäten, zuletzt Lecks
+    vertraulicher Schreiben. IDs und Nummern werden chronologisch vergeben.
+    """
+    desk = CorrespondenceDesk(world)
+    if world.seed == BASELINE_SEED:
+        add_storylines(desk)
+    rng = desk.rng
+    for framework in sorted(desk.frameworks.values(), key=lambda f: f["framework_agreement_id"]):
+        desk.framework_thread(framework)
+    for amendment in sorted(desk.amendments.values(), key=lambda a: a["amendment_id"]):
+        desk.amendment_letters(amendment)
+    contracts = sorted(desk.contracts.values(), key=lambda c: c["contract_id"])
+    for contract in contracts:
+        if contract["contract_type"] == "exclusive_supply" or (
+                contract["contract_type"] in FRAMEWORK_CALLOFF_TYPES and contract["total_value"] >= 10_000_000):
+            desk.contract_confirmation(contract)
+        if contract["status"] == "draft":
+            offer = desk.contract_offer(contract)
+            if offer is not None and rng.random() < 0.35:
+                desk.offer_reply(offer, contract, "counter_offer" if rng.random() < 0.6 else "offer_rejection")
+        elif contract["contract_type"] == "spot" and contract["start_date"] >= "2057-01-15" and rng.random() < 0.2:
+            desk.contract_offer(contract, inquiry=True)
+        if contract["status"] == "cancelled":
+            desk.contract_termination(contract)
+    breaches_by_framework: dict[int, int] = defaultdict(int)
+    def breach_order(contract: dict[str, Any]) -> tuple[datetime, int]:
+        booking = desk.penalties.get(contract["contract_id"])
+        return (booking["last_arrival"] if booking else datetime.max, contract["contract_id"])
+
+    for contract in sorted(contracts, key=breach_order):
+        late = desk.late_contract_shipment(contract)
+        if late is not None:
+            desk.delay_complaint(late)
+        if contract["status"] != "breached":
+            continue
+        penalty = desk.penalty_notice(contract)
+        if penalty is None:
+            penalty = next((letter for letter in desk.letters if letter.letter_type == "penalty_notice"
+                            and letter.refs["contract_id"] == contract["contract_id"]), None)
+        if penalty is None:
+            continue
+        if (penalty.amount or 0) > EXECUTIVE_PENALTY_THRESHOLD and penalty.storyline is None:
+            desk.penalty_memo(penalty, contract)
+        if contract["framework_agreement_id"]:
+            breaches_by_framework[contract["framework_agreement_id"]] += 1
+            count = breaches_by_framework[contract["framework_agreement_id"]]
+            if count % 2 == 0 and penalty.storyline is None:
+                desk.repeat_breach_warning(desk.frameworks[contract["framework_agreement_id"]], penalty, count)
+    for order in sorted(desk.orders.values(), key=lambda o: o["order_id"]):
+        shipment = desk.shipment_by_order.get(order["order_id"])
+        if shipment is None or order["customer_company_id"] is None:
+            continue
+        open_at_reference = order["status"] in ("in_transit", "delayed")
+        if open_at_reference or (order["contract_id"] and order["total_amount"] >= DELIVERY_NOTICE_MIN_AMOUNT
+                                 and rng.random() < 0.3):
+            desk.delivery_notice(order)
+        if shipment["risk_incident"] and (order["contract_id"] or rng.random() < 0.35):
+            desk.delay_notice(order)
+        if (order["contract_id"] is None and order["status"] == "delayed"
+                and datetime.fromisoformat(shipment["arrival_date"]) + timedelta(hours=12) < GAME_REFERENCE_DATETIME):
+            desk.delay_complaint(order)
+    for order in sorted(desk.orders.values(), key=lambda o: o["order_id"]):
+        # Firmenkunden werden immer gemahnt, Nicht-Firmenkunden in einer Stichprobe (Mengenbegrenzung)
+        if order["payment_status"] == "overdue" and (order["customer_company_id"] or rng.random() < 0.25):
+            desk.payment_reminders(order)
+    for event in sorted(desk.events.values(), key=lambda e: e["event_id"]):
+        if event["severity"] in ("major", "critical"):
+            desk.event_memo(event)
+    for rivalry in sorted(desk.rivalries.values(), key=lambda r: r["rivalry_id"]):
+        desk.rivalry_protest(rivalry)
+        desk.rivalry_rumors(rivalry)
+    desk.leak_letters()
+    desk.finalize()
+    world.correspondence_notes = desk.adaptations
 
 
 # ---------------------------------------------------------------------------
@@ -5012,6 +7475,69 @@ SCHEMA_STATEMENTS: tuple[str, ...] = (
         removed_by_amendment_id INTEGER REFERENCES framework_agreement_amendments(amendment_id),
         CHECK(valid_to IS NULL OR valid_to >= valid_from)
     )""",
+    """CREATE TABLE correspondence (
+        correspondence_id INTEGER PRIMARY KEY,
+        correspondence_number TEXT NOT NULL UNIQUE,
+        correspondence_type TEXT NOT NULL CHECK(correspondence_type IN ('inquiry','offer','counter_offer',
+            'offer_rejection','contract_confirmation','amendment_offer','amendment_confirmation','amendment_rejection',
+            'delivery_notice','delay_notice','delay_complaint','penalty_notice','payment_reminder','breach_warning',
+            'termination_notice','suspension_notice','protest','confidential_tip','rumor','internal_memo')),
+        channel TEXT NOT NULL CHECK(channel IN ('letter','email','encrypted_message','holo_call')),
+        direction TEXT NOT NULL CHECK(direction IN ('seller_to_buyer','buyer_to_seller','internal','to_rival',
+            'lateral')),
+        thread_id INTEGER NOT NULL REFERENCES correspondence(correspondence_id) DEFERRABLE INITIALLY DEFERRED,
+        in_reply_to_id INTEGER REFERENCES correspondence(correspondence_id) DEFERRABLE INITIALLY DEFERRED,
+        refers_to_correspondence_id INTEGER REFERENCES correspondence(correspondence_id) DEFERRABLE INITIALLY DEFERRED,
+        sent_at TEXT NOT NULL CHECK(sent_at < '2060-01-01'),
+        is_read INTEGER NOT NULL CHECK(is_read IN (0,1)),
+        read_at TEXT,
+        sender_company_id INTEGER NOT NULL REFERENCES companies(company_id),
+        sender_employee_id INTEGER REFERENCES employees(employee_id),
+        sender_station_id INTEGER REFERENCES stations(station_id),
+        recipient_company_id INTEGER REFERENCES companies(company_id),
+        recipient_employee_id INTEGER REFERENCES employees(employee_id),
+        recipient_customer_id INTEGER REFERENCES customers(customer_id),
+        language TEXT NOT NULL CHECK(language IN ('de_DE','en_US')),
+        subject TEXT NOT NULL,
+        body TEXT NOT NULL,
+        confidentiality TEXT NOT NULL CHECK(confidentiality IN ('public','internal','confidential')),
+        min_intel_access_level INTEGER NOT NULL CHECK(min_intel_access_level BETWEEN 0 AND 3),
+        sentiment TEXT NOT NULL CHECK(sentiment IN ('positive','neutral','negative','hostile')),
+        amount REAL CHECK(amount IS NULL OR amount >= 0),
+        due_date TEXT,
+        response_required INTEGER NOT NULL DEFAULT 0 CHECK(response_required IN (0,1)),
+        status TEXT NOT NULL CHECK(status IN ('sent','read','answered','rejected','escalated','closed')),
+        trust_effect INTEGER NOT NULL CHECK(trust_effect BETWEEN -20 AND 10),
+        is_accurate INTEGER CHECK(is_accurate IS NULL OR is_accurate IN (0,1)),
+        intel_value INTEGER NOT NULL CHECK(intel_value BETWEEN 0 AND 100),
+        leak_status TEXT NOT NULL DEFAULT 'none' CHECK(leak_status IN ('none','rumored','leaked')),
+        leaked_by_employee_id INTEGER REFERENCES employees(employee_id),
+        leaked_to_company_id INTEGER REFERENCES companies(company_id),
+        partnership_id INTEGER REFERENCES trade_partnerships(partnership_id),
+        rivalry_id INTEGER REFERENCES company_rivalries(rivalry_id),
+        framework_agreement_id INTEGER REFERENCES framework_agreements(framework_agreement_id),
+        amendment_id INTEGER REFERENCES framework_agreement_amendments(amendment_id),
+        contract_id INTEGER REFERENCES contracts(contract_id),
+        order_id INTEGER REFERENCES orders(order_id),
+        shipment_id INTEGER REFERENCES shipments(shipment_id),
+        event_id INTEGER REFERENCES events(event_id),
+        storyline_code TEXT,
+        CHECK(recipient_company_id IS NOT NULL OR recipient_customer_id IS NOT NULL),
+        CHECK(correspondence_type <> 'internal_memo' OR recipient_company_id = sender_company_id),
+        CHECK(recipient_company_id IS NULL OR recipient_company_id <> sender_company_id
+              OR correspondence_type = 'internal_memo'),
+        CHECK(is_accurate IS NULL OR correspondence_type IN ('confidential_tip','rumor')),
+        CHECK((is_read = 1) = (read_at IS NOT NULL)),
+        CHECK(read_at IS NULL OR read_at >= sent_at),
+        CHECK(leak_status = 'none' OR leaked_by_employee_id IS NOT NULL)
+    )""",
+    """CREATE TABLE correspondence_copies (
+        copy_id INTEGER PRIMARY KEY,
+        correspondence_id INTEGER NOT NULL REFERENCES correspondence(correspondence_id) ON DELETE CASCADE,
+        employee_id INTEGER NOT NULL REFERENCES employees(employee_id),
+        copy_type TEXT NOT NULL CHECK(copy_type IN ('cc','bcc','forward')),
+        UNIQUE(correspondence_id, employee_id)
+    )""",
     "CREATE INDEX idx_stations_company ON stations(company_id)",
     "CREATE INDEX idx_stations_system ON stations(system_id)",
     "CREATE INDEX idx_products_company ON products(company_id)",
@@ -5041,6 +7567,11 @@ SCHEMA_STATEMENTS: tuple[str, ...] = (
     "CREATE INDEX idx_employees_station ON employees(station_id)",
     "CREATE INDEX idx_events_station ON events(station_id, event_date)",
     "CREATE INDEX idx_event_effects_station ON event_effects(station_id, product_id)",
+    "CREATE INDEX idx_correspondence_sender ON correspondence(sender_company_id, sent_at)",
+    "CREATE INDEX idx_correspondence_recipient ON correspondence(recipient_company_id, sent_at)",
+    "CREATE INDEX idx_correspondence_thread ON correspondence(thread_id)",
+    "CREATE INDEX idx_correspondence_contract ON correspondence(contract_id)",
+    "CREATE INDEX idx_correspondence_employee ON correspondence(sender_employee_id)",
 )
 
 
@@ -5356,6 +7887,352 @@ def framework_quality_checks(connection: sqlite3.Connection) -> list[CheckResult
     checks.append(CheckResult("Einstellungsgrenzen neuer Firmen (Vorstand, erste Partnerbetreuung/Marktaufklärung)",
                               not cap_violations, f"{len(HIRE_DATE_CAPS)} Firmen geprüft" if not cap_violations
                               else "; ".join(cap_violations)))
+    return checks
+
+
+def correspondence_quality_checks(connection: sqlite3.Connection, seed: int) -> list[CheckResult]:
+    """Prüfungen des Schriftverkehrs: Menge, Personen, Fäden, Bezüge, Zeitfolge, Strafen, Mahnungen, Lecks."""
+    checks: list[CheckResult] = []
+    letters = query(connection, "SELECT * FROM correspondence ORDER BY correspondence_id")
+    copies = query(connection, "SELECT * FROM correspondence_copies")
+    companies = query(connection, "SELECT company_id, slug, language FROM companies").set_index("company_id")
+    employees = query(connection, "SELECT * FROM employees").set_index("employee_id")
+    contracts = query(connection, "SELECT * FROM contracts").set_index("contract_id")
+    orders = query(connection, "SELECT * FROM orders").set_index("order_id")
+    shipments = query(connection, "SELECT * FROM shipments").set_index("shipment_id")
+    events = query(connection, "SELECT event_id, event_date FROM events").set_index("event_id")
+    frameworks = query(connection, "SELECT * FROM framework_agreements").set_index("framework_agreement_id")
+    amendments = query(connection, "SELECT * FROM framework_agreement_amendments").set_index("amendment_id")
+    partnerships = query(connection, "SELECT * FROM trade_partnerships").set_index("partnership_id")
+    rivalries = query(connection, "SELECT * FROM company_rivalries").set_index("rivalry_id")
+    customers = query(connection, "SELECT customer_id, company_id FROM customers").set_index("customer_id")
+    legacy_ids = {cid for cid, slug in companies["slug"].items()
+                  if slug in {p.slug for p in COMPANY_PROFILES if p.key in LEGACY_COMPANY_KEYS}}
+    prefixes = {cid: next(p.sku_prefix for p in COMPANY_PROFILES if p.slug == slug)
+                for cid, slug in companies["slug"].items()}
+
+    def ref(value: Any) -> int | None:
+        return None if value is None or (isinstance(value, float) and math.isnan(value)) else int(value)
+
+    # 1. Menge und Beteiligung
+    involved = set(letters["sender_company_id"]) | {int(c) for c in letters["recipient_company_id"].dropna()}
+    legacy_letters = 0
+    for row in letters.itertuples():
+        contract_id = ref(row.contract_id)
+        if (contract_id is not None and row.sender_company_id in legacy_ids
+                and ref(row.recipient_company_id) in legacy_ids
+                and contracts.loc[contract_id, "company_id"] in legacy_ids
+                and contracts.loc[contract_id, "partner_company_id"] in legacy_ids):
+            legacy_letters += 1
+    types = set(letters["correspondence_type"])
+    checks.append(CheckResult(
+        "Schriftverkehr: 2.000–6.000 Schreiben, alle 20 Briefarten, alle 18 Firmen, Bestandsfirmen untereinander",
+        2000 <= len(letters) <= 6000 and types == set(CORRESPONDENCE_TYPES) and len(involved) == len(companies)
+        and legacy_letters >= 100,
+        f"{len(letters)} Schreiben, {len(types)} Briefarten, {len(involved)} Firmen, {legacy_letters} zwischen "
+        f"Bestandsfirmen zu Bestandsverträgen, {len(copies)} Kopien"))
+
+    # 2. Nummern, Sprache, Parteien
+    markers = {"de_DE": ("Mit freundlichen Grüßen", "Gesprächsnotiz", "[Verschlüsselte Nachricht"),
+               "en_US": ("Kind regards", "Call note", "[Encrypted message")}
+    bad_form = []
+    for row in letters.itertuples():
+        language = companies.loc[row.sender_company_id, "language"]
+        expected = f"{prefixes[row.sender_company_id]}-{CORRESPONDENCE_PREFIX[language]}-{row.sent_at[:4]}-"
+        recipient_company = ref(row.recipient_company_id)
+        internal = recipient_company == row.sender_company_id
+        if (row.language != language or not row.correspondence_number.startswith(expected)
+                or len(row.correspondence_number) != len(expected) + 5
+                or not any(marker in row.body for marker in markers[language])
+                or (row.correspondence_type == "internal_memo") != internal
+                or row.channel not in CORRESPONDENCE_CHANNELS or row.direction not in CORRESPONDENCE_DIRECTIONS
+                or row.sentiment not in SENTIMENTS or row.status not in CORRESPONDENCE_STATUSES
+                or row.confidentiality not in CONFIDENTIALITY_LEVELS
+                or (recipient_company is None and ref(row.recipient_customer_id) is None)):
+            bad_form.append(row.correspondence_number)
+    checks.append(CheckResult("Schriftverkehr: Nummer je Absender und Jahr, Sprache und Text der Absenderfirma, "
+                              "Wertelisten, interne Notizen nur firmenintern", not bad_form,
+                              "alle Schreiben korrekt" if not bad_form
+                              else f"{len(bad_form)} Verstöße, z. B. {bad_form[:3]}"))
+
+    # 3. Personen gehören zur Firma und sind beim Versand beschäftigt
+    def employed(employee_id: int | None, company_id: int | None, day: str) -> bool:
+        if employee_id is None or employee_id not in employees.index:
+            return False
+        employee = employees.loc[employee_id]
+        return (employee["company_id"] == company_id and employee["hire_date"] <= day
+                and (not isinstance(employee["termination_date"], str) or employee["termination_date"] > day))
+
+    bad_people = []
+    by_id = letters.set_index("correspondence_id")
+    for row in letters.itertuples():
+        day = row.sent_at[:10]
+        ok = employed(ref(row.sender_employee_id), row.sender_company_id, day)
+        if ref(row.recipient_employee_id) is not None:
+            ok = ok and employed(ref(row.recipient_employee_id), ref(row.recipient_company_id), day)
+        elif ref(row.recipient_customer_id) is not None:
+            ok = ok and customers.loc[ref(row.recipient_customer_id), "company_id"] == row.sender_company_id
+        else:
+            ok = False
+        if not ok:
+            bad_people.append(row.correspondence_number)
+    for copy in copies.itertuples():
+        letter = by_id.loc[copy.correspondence_id]
+        if copy.copy_type not in COPY_TYPES or not any(employed(copy.employee_id, company, letter["sent_at"][:10])
+                   for company in (letter["sender_company_id"], ref(letter["recipient_company_id"]))):
+            bad_people.append(f"Kopie {copy.copy_id}")
+    checks.append(CheckResult("Absender, Empfänger und Kopien gehören zur jeweiligen Firma und sind am Versandtag "
+                              "beschäftigt", not bad_people, f"{len(letters)} Schreiben, {len(copies)} Kopien geprüft"
+                              if not bad_people else f"{len(bad_people)} Verstöße, z. B. {bad_people[:3]}"))
+
+    # 4. Gesprächsfäden
+    checks.append(zero_check(connection, "Gesprächsfäden: Antworten nach dem Original an dessen Absender, Vorgang "
+                                         "beginnt mit dem ersten Schreiben, alles vor dem Stichtag", """
+        SELECT COUNT(*) FROM correspondence k
+        LEFT JOIN correspondence p ON p.correspondence_id = k.in_reply_to_id
+        JOIN correspondence t ON t.correspondence_id = k.thread_id
+        LEFT JOIN correspondence q ON q.correspondence_id = k.refers_to_correspondence_id
+        WHERE (p.correspondence_id IS NOT NULL AND (p.sent_at >= k.sent_at OR p.thread_id <> k.thread_id
+               OR p.sender_company_id IS NOT k.recipient_company_id
+               OR p.recipient_company_id IS NOT k.sender_company_id))
+           OR t.sent_at > k.sent_at OR t.thread_id <> t.correspondence_id
+           OR (q.correspondence_id IS NOT NULL AND q.sent_at >= k.sent_at)
+           OR k.sent_at >= '2060-01-01'
+           OR (k.read_at IS NOT NULL AND (k.read_at < k.sent_at OR k.read_at >= '2060-01-01'))
+           OR (k.status IN ('answered','rejected') AND NOT EXISTS (
+               SELECT 1 FROM correspondence a WHERE a.in_reply_to_id = k.correspondence_id))""",
+        f"{int(letters['in_reply_to_id'].notna().sum())} Antworten, {letters['thread_id'].nunique()} Vorgänge"))
+
+    # 5. Bezugsobjekte passen zu den Parteien, 6. kein Schreiben vor seinem Bezugsobjekt
+    bad_refs, too_early = [], []
+    for row in letters.itertuples():
+        sender, recipient = row.sender_company_id, ref(row.recipient_company_id)
+        parties = {sender, recipient} - {None}
+        objects: list[tuple[str, set[int | None]]] = []
+        ok = True
+        contract_id, order_id, shipment_id = ref(row.contract_id), ref(row.order_id), ref(row.shipment_id)
+        framework_id, amendment_id = ref(row.framework_agreement_id), ref(row.amendment_id)
+        if contract_id is not None:
+            contract = contracts.loc[contract_id]
+            objects.append(("contract", {contract["company_id"], contract["partner_company_id"]}))
+            if framework_id is not None and ref(contract["framework_agreement_id"]) not in (None, framework_id):
+                ok = False
+        if shipment_id is not None:
+            shipment = shipments.loc[shipment_id]
+            ok = ok and (order_id is None or int(shipment["order_id"]) == order_id)
+            order_id = order_id or int(shipment["order_id"])
+        if order_id is not None:
+            order = orders.loc[order_id]
+            customer_company = ref(order["customer_company_id"])
+            if customer_company is None:
+                ok = (ok and order["company_id"] == sender
+                      and ref(row.recipient_customer_id) == int(order["customer_id"]))
+            else:
+                objects.append(("order", {order["company_id"], customer_company}))
+            if contract_id is not None and ref(order["contract_id"]) is not None:
+                ok = ok and ref(order["contract_id"]) == contract_id
+        if amendment_id is not None:
+            amendment = amendments.loc[amendment_id]
+            ok = ok and (framework_id is None or int(amendment["framework_agreement_id"]) == framework_id)
+            framework_id = framework_id or int(amendment["framework_agreement_id"])
+        if framework_id is not None:
+            framework = frameworks.loc[framework_id]
+            objects.append(("framework", {framework["company_id"], framework["partner_company_id"]}))
+        if ref(row.partnership_id) is not None:
+            partnership = partnerships.loc[ref(row.partnership_id)]
+            objects.append(("partnership", {partnership["company_id"], partnership["partner_company_id"]}))
+        if ref(row.rivalry_id) is not None:
+            rivalry = rivalries.loc[ref(row.rivalry_id)]
+            objects.append(("rivalry", {rivalry["company_id"], rivalry["rival_company_id"]}))
+        for kind, owners in objects:
+            if row.correspondence_type in EXEMPT_PARTY_TYPES or kind == "rivalry":
+                ok = ok and bool(owners & parties)
+            else:
+                ok = ok and owners == parties
+        if not ok:
+            bad_refs.append(row.correspondence_number)
+        sent = row.sent_at
+        source = ref(row.refers_to_correspondence_id)
+        negotiation = row.correspondence_type in NEGOTIATION_TYPES or (
+            row.correspondence_type in ("confidential_tip", "rumor") and source is not None
+            and by_id.loc[source, "correspondence_type"] in NEGOTIATION_TYPES)  # Leck eines Angebots
+        early = ((order_id is not None and sent < orders.loc[order_id, "order_date"])
+                 or (shipment_id is not None and sent < shipments.loc[shipment_id, "departure_date"])
+                 or (ref(row.event_id) is not None and sent[:10] < events.loc[ref(row.event_id), "event_date"])
+                 or (contract_id is not None and not negotiation
+                     and sent[:10] < contracts.loc[contract_id, "start_date"])
+                 or (framework_id is not None and not negotiation
+                     and sent[:10] < frameworks.loc[framework_id, "signed_date"])
+                 or (amendment_id is not None and sent[:10] < amendments.loc[amendment_id, "proposed_date"])
+                 or (ref(row.partnership_id) is not None
+                     and sent[:10] < partnerships.loc[ref(row.partnership_id), "start_date"]))
+        if early:
+            too_early.append(row.correspondence_number)
+    checks.append(CheckResult("Bezugsobjekte passen zu den Firmen (Vertrag, Bestellung, Lieferung, Rahmen, Nachtrag, "
+                              "Vereinbarung = Absender/Empfänger; Tipps/Notizen/Proteste betreffen eine Partei)",
+                              not bad_refs, "alle Bezüge stimmig" if not bad_refs
+                              else f"{len(bad_refs)} Verstöße, z. B. {bad_refs[:3]}"))
+    checks.append(CheckResult("Kein Schreiben vor seinem Bezugsobjekt (Bestellung, Abflug, Ereignis, Vertragsbeginn, "
+                              "Unterzeichnung, Nachtragsangebot, Vereinbarung)", not too_early,
+                              "Zeitfolge eingehalten" if not too_early
+                              else f"{len(too_early)} Verstöße, z. B. {too_early[:3]}"))
+
+    # 7. Vertragsstrafen: Formel und Monatssummen
+    penalty_rows = query(connection, """
+        SELECT k.contract_id, k.contract_number, k.company_id, k.partner_company_id, k.deadline, k.penalty_per_day,
+               MAX(s.actual_arrival_date) AS last_arrival, SUM(s.actual_arrival_date IS NULL) AS open_shipments
+        FROM contracts k JOIN orders o ON o.contract_id = k.contract_id JOIN shipments s ON s.order_id = o.order_id
+        WHERE k.status = 'breached' GROUP BY k.contract_id""")
+    notices = letters[letters["correspondence_type"] == "penalty_notice"]
+    expected_sum: dict[tuple[int, str], float] = defaultdict(float)
+    bad_penalty = []
+    expected_count = 0
+    for row in penalty_rows.itertuples():
+        last = (GAME_REFERENCE_DATETIME - timedelta(days=1) if row.open_shipments
+                else datetime.fromisoformat(row.last_arrival))
+        late_days = max(0, (last.date() - date.fromisoformat(row.deadline)).days)
+        amount = late_days * row.penalty_per_day
+        own = notices[notices["contract_id"] == row.contract_id]
+        if amount <= 0:
+            if len(own):
+                bad_penalty.append(row.contract_number)
+            continue
+        expected_count += 1
+        if (len(own) != 1 or abs(own.iloc[0]["amount"] - amount) > 0.011
+                or own.iloc[0]["sender_company_id"] != row.partner_company_id
+                or own.iloc[0]["recipient_company_id"] != row.company_id or own.iloc[0]["sent_at"] < fmt_dt(last)):
+            bad_penalty.append(row.contract_number)
+            continue
+        expected_sum[(row.company_id, last.strftime("%Y-%m"))] += float(own.iloc[0]["amount"])
+    financials = query(connection, "SELECT company_id, period, contract_penalties FROM company_financials WHERE "
+                                   "contract_penalties > 0")
+    booked = {(r.company_id, r.period): r.contract_penalties for r in financials.itertuples()}
+    month_issues = [f"{c}/{p}" for (c, p) in set(booked) | set(expected_sum)
+                    if abs(booked.get((c, p), 0.0) - expected_sum.get((c, p), 0.0)) > 0.05]
+    checks.append(CheckResult(
+        "Strafbescheide = Verzugstage × penalty_per_day; Summe je Firma und Monat = contract_penalties",
+        not bad_penalty and not month_issues and len(notices) == expected_count,
+        f"{len(notices)} Bescheide über {fmt_number(notices['amount'].sum(), 'de_DE', 2)} CR, {len(booked)} "
+        "Firmenmonate stimmen" if not bad_penalty and not month_issues
+        else f"{len(bad_penalty)} Bescheide, {len(month_issues)} Monate abweichend, "
+             f"z. B. {(bad_penalty + month_issues)[:4]}"))
+
+    # 8. Mahnungen
+    reminders = letters[letters["correspondence_type"] == "payment_reminder"]
+    bad_reminders = []
+    for order_id, group in reminders.groupby("order_id"):
+        order = orders.loc[int(order_id)]
+        shipment = shipments[shipments["order_id"] == int(order_id)]
+        if (order["payment_status"] != "overdue" or shipment.empty
+                or not isinstance(shipment.iloc[0]["actual_arrival_date"], str)):
+            bad_reminders.append(order["order_number"])
+            continue
+        arrival = datetime.fromisoformat(shipment.iloc[0]["actual_arrival_date"]).date()
+        due = arrival + timedelta(days=PAYMENT_TERMS_DAYS)
+        for stage, row in enumerate(group.sort_values("sent_at").itertuples()):
+            offset = (date.fromisoformat(row.sent_at[:10]) - due).days
+            low, high = REMINDER_STAGE_DAYS[stage] if stage < len(REMINDER_STAGE_DAYS) else (999, 999)
+            if (not low <= offset <= high or row.amount < order["total_amount"] - 0.01
+                    or row.sender_company_id != order["company_id"] or row.due_date != fmt_date(due)):
+                bad_reminders.append(f"{order['order_number']}#{stage + 1}")
+    checks.append(CheckResult("Mahnungen nur bei überfälligen Bestellungen, Stufen Fälligkeit +3..7 / +21 / +45 Tage",
+                              not bad_reminders, f"{len(reminders)} Mahnungen zu {reminders['order_id'].nunique()} "
+                              "Bestellungen" if not bad_reminders
+                              else f"{len(bad_reminders)} Verstöße, z. B. {bad_reminders[:3]}"))
+
+    # 9. Verzugsbeschwerden nur bei echter Verspätung
+    complaints = letters[letters["correspondence_type"] == "delay_complaint"]
+    bad_complaints = []
+    for row in complaints.itertuples():
+        shipment_id = ref(row.shipment_id)
+        if shipment_id is None:
+            bad_complaints.append(row.correspondence_number)
+            continue
+        shipment = shipments.loc[shipment_id]
+        order = orders.loc[int(shipment["order_id"])]
+        planned = datetime.fromisoformat(shipment["arrival_date"])
+        actual = (datetime.fromisoformat(shipment["actual_arrival_date"])
+                  if isinstance(shipment["actual_arrival_date"], str) else None)
+        contract_id = ref(order["contract_id"])
+        breached = contract_id is not None and contracts.loc[contract_id, "status"] == "breached"
+        late = actual is not None and (actual - planned).total_seconds() / 3600 > LATE_COMPLAINT_HOURS
+        if (not (late or breached or order["status"] == "delayed")
+                or row.sender_company_id != order["customer_company_id"]):
+            bad_complaints.append(row.correspondence_number)
+    checks.append(CheckResult("Verzugsbeschwerden nur bei > 48 h Verspätung, Vertragsbruch oder Status delayed "
+                              "(Käufer an Verkäufer)", not bad_complaints, f"{len(complaints)} Beschwerden"
+                              if not bad_complaints else f"{len(bad_complaints)} Verstöße, z. B. {bad_complaints[:3]}"))
+
+    # 10. Rahmen und Nachträge
+    bad_frames = []
+    for fid, framework in frameworks.iterrows():
+        own = letters[letters["framework_agreement_id"] == fid]
+        confirmations = own[(own["correspondence_type"] == "contract_confirmation") & own["contract_id"].isna()]
+        if framework["start_date"] < fmt_date(GAME_REFERENCE_DATE) and (
+                len(confirmations) != 1 or confirmations.iloc[0]["sent_at"][:10] != framework["start_date"]
+                or confirmations.iloc[0]["sender_company_id"] != framework["partner_company_id"]):
+            bad_frames.append(framework["agreement_number"])
+        talks = own[own["correspondence_type"].isin(["inquiry", "offer", "counter_offer"]) & own["contract_id"].isna()
+                    & own["amendment_id"].isna()]
+        if talks.empty or (talks["sent_at"].str[:10] >= framework["signed_date"]).any():
+            bad_frames.append(f"{framework['agreement_number']} (Verhandlung)")
+    for aid, amendment in amendments.iterrows():
+        own = letters[letters["amendment_id"] == aid]
+        framework = frameworks.loc[amendment["framework_agreement_id"]]
+        initiator = amendment["initiated_by_company_id"]
+        other = framework["partner_company_id"] if initiator == framework["company_id"] else framework["company_id"]
+        opening = own[(own["sender_company_id"] == initiator) & (own["sent_at"].str[:10] == amendment["proposed_date"])]
+        if amendment["status"] == "signed":
+            closing = own[(own["correspondence_type"] == "amendment_confirmation") & (own["sender_company_id"] == other)
+                          & (own["sent_at"].str[:10] == amendment["signed_date"])]
+        elif amendment["status"] == "rejected":
+            closing = own[(own["correspondence_type"] == "amendment_rejection") & (own["sender_company_id"] == other)
+                          & (own["sent_at"].str[:10] <= amendment["effective_date"])]
+        else:
+            closing = own.head(1)
+        if opening.empty or closing.empty:
+            bad_frames.append(amendment["amendment_number"])
+    checks.append(CheckResult("Rahmen: Verhandlung vor der Unterzeichnung, Bestätigung zum Vertragsstart; jeder "
+                              "Nachtrag mit Angebot am Angebotsdatum und Bestätigung/Ablehnung der Gegenseite",
+                              not bad_frames, f"{len(frameworks)} Rahmen, {len(amendments)} Nachträge belegt"
+                              if not bad_frames else f"{len(bad_frames)} Lücken, z. B. {bad_frames[:4]}"))
+
+    # 11. Lecks und Spionage
+    bad_leaks = []
+    for row in letters[letters["leaked_by_employee_id"].notna()].itertuples():
+        leaker_id = int(row.leaked_by_employee_id)
+        leaker = employees.loc[leaker_id]
+        rule = leaker["bribe_susceptibility"] >= 50 or leaker["loyalty"] <= 50
+        if row.correspondence_type in ("confidential_tip", "rumor"):
+            ok = rule and ref(row.sender_employee_id) == leaker_id
+            original = ref(row.refers_to_correspondence_id)
+            if original is not None and by_id.loc[original, "leak_status"] != "none":
+                ok = ok and leaker["intel_access_level"] >= by_id.loc[original, "min_intel_access_level"]
+        else:
+            ok = (rule and row.leak_status != "none" and row.confidentiality != "public"
+                  and leaker["intel_access_level"] >= row.min_intel_access_level
+                  and any(employed(leaker_id, company, row.sent_at[:10])
+                          for company in (row.sender_company_id, ref(row.recipient_company_id)))
+                  and not letters[(letters["refers_to_correspondence_id"] == row.correspondence_id)
+                                  & (letters["sender_employee_id"] == leaker_id)].empty)
+        if not ok:
+            bad_leaks.append(row.correspondence_number)
+    bad_leaks += list(letters[(letters["leak_status"] != "none") & letters["leaked_by_employee_id"].isna()]
+                      ["correspondence_number"])
+    tips = letters[letters["correspondence_type"].isin(["confidential_tip", "rumor"])]
+    checks.append(CheckResult("Lecks: Leck-Regel (Bestechlichkeit ≥ 50 oder Loyalität ≤ 50), Zugangsstufe, Tipp "
+                              "verweist auf das Original; Wahrheitsgehalt nur bei Tipps/Gerüchten", not bad_leaks,
+                              f"{len(tips)} Tipps/Gerüchte, {int((letters['leak_status'] != 'none').sum())} geleakte "
+                              f"Schreiben, {int((letters['confidentiality'] == 'confidential').sum())} vertraulich"
+                              if not bad_leaks else f"{len(bad_leaks)} Verstöße, z. B. {bad_leaks[:3]}"))
+
+    if seed == BASELINE_SEED:
+        present = set(letters["storyline_code"].dropna())
+        lacking = [code for code in STORYLINE_CODES if code not in present]
+        checks.append(CheckResult(f"Verankerte Vorgänge V1–V{len(STORYLINE_CODES)} umgesetzt (Seed 42)", not lacking,
+                                  f"{len(present)} Vorgänge mit {int(letters['storyline_code'].notna().sum())} "
+                                  "Schreiben"
+                                  if not lacking else f"fehlen: {', '.join(lacking)}"))
     return checks
 
 
@@ -5729,6 +8606,14 @@ def run_quality_checks(path: Path, seed: int = DEFAULT_SEED,
                      WHERE a.framework_agreement_id = f.framework_agreement_id) AS amendments,
                    f.current_end_date
             FROM framework_agreements f ORDER BY f.framework_agreement_id""")
+        # Schriftverkehr
+        checks.extend(correspondence_quality_checks(connection, seed))
+        tables["correspondence"] = query(connection, """
+            SELECT correspondence_type, COUNT(*) AS letters,
+                   SUM(sender_company_id <= 6 AND recipient_company_id <= 6) AS between_legacy,
+                   SUM(confidentiality = 'confidential') AS confidential, SUM(leak_status <> 'none') AS leaked,
+                   SUM(in_reply_to_id IS NOT NULL) AS replies
+            FROM correspondence GROUP BY correspondence_type ORDER BY letters DESC""")
         if baseline is not None and seed == BASELINE_SEED and baseline.exists():
             baseline_checks, tables["baseline"] = baseline_quality_checks(connection, baseline)
             checks.extend(baseline_checks)
@@ -5763,6 +8648,7 @@ PIPELINE: tuple[tuple[str, Callable[[World], None]], ...] = (
     ("13. Ereignisse", generate_events),
     ("14. Finanzdaten", generate_financials),
     ("15. Rahmenverträge: Zuordnung, Nachträge, Unterzeichner", finalize_framework_agreements),
+    ("16. Schriftverkehr", generate_correspondence),
 )
 
 
@@ -5799,6 +8685,7 @@ def print_summary(path: Path, checks: list[CheckResult], tables: dict[str, pd.Da
           f"({counts['event_effects']} Wirkungen) | Finanzmonate {counts['company_financials']}")
     print(f" Rahmenverträge {counts['framework_agreements']} | Nachträge {counts['framework_agreement_amendments']} | "
           f"Sortimentseinträge {counts['framework_agreement_scope']}")
+    print(f" Schreiben {counts['correspondence']} | Kopien {counts['correspondence_copies']}")
 
     print_table("Mengengerüst je Firma", tables["volume"].drop(columns=["company_id"]))
     print_table("Handelspartner je Firma", tables["partners"].drop(columns=["company_id"]))
@@ -5810,6 +8697,7 @@ def print_summary(path: Path, checks: list[CheckResult], tables: dict[str, pd.Da
     print_table("Ereignisse", tables["events"])
     print_table("Finanzen über den Datenzeitraum (Mio. CR)", tables["financials"])
     print_table("Rahmenverträge (Mio. CR)", tables["frameworks"])
+    print_table("Schriftverkehr nach Briefart", tables["correspondence"])
     if "baseline" in tables:
         print_table("Bestandsvergleich mit dem Datenstand vor der Erweiterung", tables["baseline"])
 
