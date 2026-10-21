@@ -1,10 +1,14 @@
 # Phase 1 – Team B: Grenzraum, Expansion und Kolonisierung
 
-Stand: Planung und Recherche, noch keine Änderung am Skript. Grundlage: `generate_space_trading_data.py` (Seed 42) und der Datenbestand `/home/user/bestand/space_trading_game_bestand.db`. Die Zahlen unten stammen aus eigenen SQL-Abfragen auf diesen Bestand.
+Stand: 21.10.2026, überarbeitete Fassung (Revision 2) von Phase 1. Planung und Recherche, noch keine Änderung am Skript.
+
+> **Revision 2 (Wiederholung Phase 1, verkleinerte Agentenbesetzung):** Die sechs Firmen bleiben **unverändert**, weil die verbindlichen Phase-2-Ergebnisse (`phase2_entscheidung.md`, `verknuepfungen.json`, Commit `bb1b10c`) genau auf diesen Keys, Präfixen, Systemen und Archetypen aufbauen. Ein Neuentwurf würde 48 Vereinbarungen, 12 Rivalitäten, 21 Rahmenverträge und 38 verankerte Schreiben ungültig machen. Stattdessen habe ich alle Bestandsangaben dieses Berichts erneut gegen die Bestands-DB geprüft und die Fehler korrigiert, die in Phase 2 gefunden wurden. Die Prüfprotokolle stehen in **Abschnitt 0**. Korrigierte Stellen sind mit *(korr. R2)* markiert.
+ Grundlage: `generate_space_trading_data.py` (Seed 42) und der Datenbestand `/home/user/bestand/space_trading_game_bestand.db`. Die Zahlen unten stammen aus eigenen SQL-Abfragen auf diesen Bestand.
 
 **Abgleich mit Team A (NACHRICHTEN.md, Phase-1-Eintrag von Team A):** Team A belegt Orrin, das System `pellora` und den Archetyp `habitat_modules` (Kuppelwerk Habitatbau AG). Daraufhin haben wir angepasst: Outmark sitzt jetzt auf Serravel statt in Orrin, Team B baut keine Station in Orrin, `habitat_modules` streichen wir bei uns und kaufen die Module von Kuppelwerk zu. Pionierwerk heißt jetzt „Kolonialausrüstung“ statt „Kolonialbau“ und konzentriert sich auf Terraforming und Kolonieausrüstung. Vereinbarungen mit Bestandsfirmen legen wir wie Team A nur in der Richtung „neue Firma → Bestandsfirma“ an.
 
 Inhalt:
+0. Revision 2: Nachprüfung gegen Bestand und Skript
 1. Recherche-Erkenntnisse (Skript, Bestand, Lücken, technische Randbedingungen)
 2. Überblick der 6 Firmen
 3. Firmensteckbriefe (alle Felder)
@@ -12,6 +16,34 @@ Inhalt:
 5. Handelsnetz: Vereinbarungen, Rivalitäten, Bezüge zu Bestandsobjekten
 6. Mengen und Datenbankgröße
 7. Offene Fragen an Team A
+
+---
+
+## 0. Revision 2: Nachprüfung gegen Bestand und Skript
+
+Alle Abfragen liefen lesend (`mode=ro`) auf `/home/user/bestand/space_trading_game_bestand.db`. Das Skript habe ich als Modul geladen, ohne es auszuführen.
+
+| Prüfpunkt | Ergebnis heute | Status |
+|---|---|---|
+| Systeme ohne Station | Orrin 0, Isolde 0 (Nyx 1, Tauvel 3, Myrrhen 3) | bestätigt |
+| Bestandsumfang | 33 Stationen, 504 Produkte, 491 Mitarbeiter, 5.518 Bestellungen, 93.648 Preispunkte, 74 Ereignisse | bestätigt |
+| Lücken Angebot/Nachfrage | Kharon food 0/20, medical 3/12, raw 5/25; Myrrhen industrial 0/26, technology 0/17, medical 0/10; Brennus food 0/7, medical 0/9 | bestätigt |
+| Weitere Lücken (neu notiert) | Sol raw 1/40, Aurelis raw 1/24, Sol food 6/36. Das ist Kerngebiet und gehört eher zum Themenfeld von Team A. | nur Hinweis |
+| Wenig produzierte Waren | contraband 18 Angebotsplätze; Produkte je Archetyp: regolith 3, reactor_components 5, medical_equipment 6, ammonia_ice 7 | bestätigt |
+| Geleitschutz-Zwischenfälle | 55 Lieferungen, 8 deswegen gebrochene Verträge (Liste in 1.2) | bestätigt |
+| HMX-CTR-2059-0242 | gebrochen wegen **Quarantäneprüfung (+97 h)**, nicht wegen Geleitschutz | *(korr. R2)* |
+| EKM-VTR-2058-0107 | startet in **Halcyon** (Bergbaustation Hande) → Kharon Exchange IX, Geleitschutz +71 h | *(korr. R2)* |
+| Eisenkrone Brennus → Kharon | 8 Verträge, gebrochen sind **EKM-VTR-2057-0017** (Seltene Erden, 12,97 Mio. CR) und **EKM-VTR-2059-0162** (Quantenquarz, 7,74 Mio. CR), beide wegen Andockstau | *(korr. R2)* |
+| Helix ab Kharon | 103 Verträge, 17 gebrochen | bestätigt |
+| Feldspat → Eisenkrone | Vereinbarung `contract_volume` 6,05 Mio. CR; die 16 Verträge haben zusammen 8,08 Mio. CR | *(präzisiert R2)* |
+| Aktive Vereinbarungen | Feldspat 3, Driftwood 1, Lichtacker 4, Corvane 5, Eisenkrone 7, Helix 8 | bestätigt |
+| Ereignisse 26, 45, 52, 57, 58, 67, 74 | Datum, Typ, Station wie in 1.2; 26 und 58 sind im Text „mercenary raid“ | bestätigt |
+| Einstellungsdaten | Theodor Krause (1) erst seit **2057-11-22**, Nathan Hines (33) seit 2058-01-20, Tyler Garcia (395) seit 2058-01-05. Vor diesen Daten zeichnen andere: für Feldspat Mikhail Gotthard (2, finance, seit 2055), für Eisenkrone Esther Bauer (170, relations, seit 2052). | *(korr. R2)* |
+| Pool-Größen im Skript | Archetypen × Varianten: raw 12×5 = 60, energy 5×4 = 20, industrial 10×5 = 50, technology 6×5 = 30, food 7×5 = 35, medical 6×4 = 24, luxury 8×4 = 32, contraband 6×3 = 18. Mit den neuen Archetypen: raw 65, industrial 60 (mit `habitat_modules` von Team A), technology 35 bzw. 40 | bestätigt, die Pool-Summen in Kapitel 3 enthalten die neuen Archetypen |
+| Distanzen neue Systeme | Vaskar: Isolde 283, Tauvel 590, Myrrhen 690. Serravel: Orrin 325, Halcyon 459, Brennus 525. Zu `pellora` (Team A) jeweils über 600 | bestätigt |
+| QA im Skript | `run_quality_checks` prüft fest `len(companies) == 6` und 2/2/2 (Zeile 2970 f.) | bestätigt, Anpassung durch Team A (Phase 2) |
+
+**Abgleich mit Phase 2:** Die Fragen aus Kapitel 7 wurden in Phase 2 beantwortet (`NACHRICHTEN.md`, `phase2_entscheidung.md`). Kapitel 5 zeigt den Stand von Phase 1. Verbindlich für die Umsetzung ist `verknuepfungen.json`, also mit den Kanten `kuppelwerk → pionierwerk`, `second_hull → graufalk`, `graufalk → ravenmoor` und `emberline → lichtacker` und ohne `raureif → emberline`.
 
 ---
 
@@ -59,8 +91,8 @@ Inhalt:
 
 **Piraterie und Verspätungen (echte Bestandsobjekte)**
 - 55 Lieferungen mit dem Zwischenfall „Piratenaktivität im Korridor, Geleitschutz abgewartet“ / „Pirate activity in the corridor, waited for escort“. Zielsysteme: Sol 12, Brennus 11, Myrrhen 9, Kharon/Aurelis/Halcyon je 7.
-- **8 Verträge sind gebrochen (`breached`), weil ein Abruf auf Geleitschutz warten musste:** EKM-VTR-2057-0012, EKM-VTR-2057-0043, HMX-CTR-2057-0077, LAK-VTR-2058-0008, EKM-VTR-2058-0099, EKM-VTR-2058-0107 (Bergbaustation Hande → Kharon Exchange IX), HMX-CTR-2058-0183 (Kharon Exchange V → Tauvel Labor II, 10,57 Mio. CR), EKM-VTR-2059-0167.
-- Helix hat 103 Verträge ab Kharon-Stationen, davon 17 gebrochen (zum Beispiel HMX-CTR-2059-0242, Medikamente, Kharon Landing IV → Brennus Schacht VII, 9,69 Mio. CR, Frist 27.11.2059). Eisenkrone Brennus → Kharon: 8 Verträge, davon 2 gebrochen (EKM-VTR-2059-0162 Quantenquarz, 7,74 Mio. CR; EKM-VTR-2058-0107).
+- **8 Verträge sind gebrochen (`breached`), weil ein Abruf auf Geleitschutz warten musste:** EKM-VTR-2057-0012, EKM-VTR-2057-0043, HMX-CTR-2057-0077, LAK-VTR-2058-0008, EKM-VTR-2058-0099, EKM-VTR-2058-0107 (Bergbaustation Hande, Halcyon → Kharon Exchange IX), HMX-CTR-2058-0183 (Kharon Exchange V → Tauvel Labor II, 10,57 Mio. CR), EKM-VTR-2059-0167.
+- Helix hat 103 Verträge ab Kharon-Stationen, davon 17 gebrochen (zum Beispiel HMX-CTR-2059-0242, Medikamente, Kharon Landing IV → Brennus Schacht VII, 9,69 Mio. CR, Frist 27.11.2059). HMX-CTR-2059-0242 ist wegen einer Quarantäneprüfung gebrochen, nicht wegen Geleitschutz *(korr. R2)*. Eisenkrone Brennus → Kharon: 8 Verträge, davon 2 gebrochen, beide wegen Andockstau: EKM-VTR-2057-0017 (Seltene Erden, 12,97 Mio. CR) und EKM-VTR-2059-0162 (Quantenquarz, 7,74 Mio. CR) *(korr. R2)*. EKM-VTR-2058-0107 startet dagegen in Halcyon.
 - Offene verspätete Bestellungen zum Stichtag: 7 (zum Beispiel DWS-ORD-2059-00107 nach Kharon Exchange V, EKM-BST-2059-02343 nach Kharon Exchange IX).
 
 **Ereignisse, an die wir anknüpfen**
@@ -78,16 +110,16 @@ Inhalt:
 | Firma | Name | Rolle, Station | Loyalität / Bestechlichkeit | Ansatz |
 |---|---|---|---|---|
 | Driftwood | Carlos Osborne | station_manager, Smugglers' Haven Hoffman | 3 / 100, greedy | wahrscheinlicher Informant von Ravenmoor vor der Razzia 58 |
-| Driftwood | Nathan Hines | security, Smugglers' Haven Hoffman | 36 / 81 | zweiter Leak-Kandidat |
+| Driftwood | Nathan Hines | security, Smugglers' Haven Hoffman | 36 / 81 | zweiter Leak-Kandidat (erst seit 2058-01-20 dabei) |
 | Driftwood | Tina Gould | executive | 49 / 56 | Absenderin des Protestschreibens zur Razzia |
 | Helix | Wayne Jacobson | station_manager, Kharon Landing IV | 48 / 73, greedy | verhandelt Geleitschutz mit Ravenmoor, zugleich Ziel der Razzia 26 |
 | Helix | David Hendricks | station_manager, Kharon Exchange V | 78 / 28, loyal | seriöser Ansprechpartner für den Rahmenvertrag |
-| Helix | Tyler Garcia | relations, Kharon Exchange V | 55 / 71 | Partnerbetreuung Kharon |
+| Helix | Tyler Garcia | relations, Kharon Exchange V | 55 / 71 | Partnerbetreuung Kharon (seit 2058-01-05) |
 | Feldspat | Slavko Geisel | relations, Davids-Kontor | 55 / 96, greedy | soll Vermessungsdaten von Outmark gekauft haben (Fund 52) |
-| Feldspat | Theodor Krause | executive | 80 / 54 | Adressat der Claim-Beschwerde |
+| Feldspat | Theodor Krause | executive | 80 / 54 | Adressat der Claim-Beschwerde (erst seit 2057-11-22; vorher ist Mikhail Gotthard (2) der Adressat) *(korr. R2)* |
 | Lichtacker | Kaspar Täsche | intelligence | 55 / 61 | beobachtet Pionierwerk auf Isolde |
 | Lichtacker | Reimar Rörricht | executive | 66 / 63 | führt den Streit um die Isolde-Pachtrechte |
-| Eisenkrone | Claire Rust | station_manager, Brennus Schacht VII | 90 / 17 | Empfängerin der verspäteten Helix-Lieferung (HMX-CTR-2059-0242) |
+| Eisenkrone | Claire Rust | station_manager, Brennus Schacht VII | 90 / 17 | Empfängerin der verspäteten Helix-Lieferung (HMX-CTR-2059-0242, Quarantäne) |
 
 ### 1.3 Partnerkapazität der Bestandsfirmen (kritisch für beide Teams)
 
@@ -122,6 +154,9 @@ Vorschlag (Entscheidung mit Team A in Phase 2):
 - 13 Sektoren mit Gefahrenstufe 0–5, Spawns und Garnisonen nur in gefährlichen Sektoren → passt zu `unlock_tier` 5 und zu den Geleitschutzdiensten.
 - Planetentypen (Wald, Wüste, Vulkan, Eis, Gas, Ozean) und Gebäude (Agrarkuppel, Tagebau, Raffinerie, Plasmagas-Anlage, Quantenquarz-Anlage) → Vorbild für einen Gasriesen mit Eismonden (Vaskar) und eine Terraforming-Welt (Serravel).
 - Kolonisierung kostet Verbundstahl, Komfortgüter und Nahrung → Vorbild für die Warenkette Pionierwerk/Morgengrund/Second Hull.
+- `expeditions.json` (Sonden, Signale, Fundorte) und `deposits.json` (33 beanspruchbare Lagerstätten je Sektor) → Vorbild für Outmark: Vermessung vor dem Abbau, Claims als Streitpunkt (Fund 52). *(R2)*
+- `garrisons.json` (Garnisonen ab einer Mindestgefahr, Wellen nach Gefahrenstufe) → Vorbild für die Bastionen von Ravenmoor und den Geleitschutz als Voraussetzung für Stufe 5. *(R2)*
+- `jumpLinks.json` (22 Sprungverbindungen mit Distanzen) → Hinweis für die Spiellogik: Vaskar nur über Isolde anbinden (283 Einheiten), Serravel über Orrin (325). *(R2)*
 - Namen aus idlestar übernehmen wir bewusst nicht (eigene, fiktive Namen).
 
 ---
@@ -238,7 +273,7 @@ CompanyProfile(
 - **Hauptsitz:** Bergbaustation in Vaskar (neues System, Stufe 5). Gegründet 2045–2049: Konzerne erschließen Vaskar lange vor der Öffnung für freie Händler, die Stufe gilt nur für den Spieler.
 - **Pool-Prüfung:** raw 65 + energy 20 + industrial 60 + technology 35 = 180 ≥ 90.
 - **Rolle im Netz:** Lieferant von Volatilen. Verkauft Wasser-, Ammoniak- und Stickstoffeis, Helium-3, Deuterium, Plasmagas und Brennstoffzellen an Pionierwerk, Ravenmoor und Eisenkrone. Kauft Sensoren und Bergbaudrohnen von Outmark.
-- **Konkurrenz:** Mit Feldspat als Eis- und Helium-3-Lieferant von Eisenkrone (Feldspat verkauft heute für nur 6,0 Mio. CR an Eisenkrone). Mit der Station Löchel (Eisenkrone) und den Agrarkolonien (Lichtacker) um Wassereis in Myrrhen. Dort gibt es die bestehende Rivalität Lichtacker ↔ Eisenkrone, die wir nur über Ereignisse und Preise berühren, nicht über eine weitere Rivalität.
+- **Konkurrenz:** Mit Feldspat als Eis- und Helium-3-Lieferant von Eisenkrone (Vereinbarungsvolumen Feldspat → Eisenkrone heute nur 6,05 Mio. CR, 16 Verträge mit zusammen 8,08 Mio. CR). Mit der Station Löchel (Eisenkrone) und den Agrarkolonien (Lichtacker) um Wassereis in Myrrhen. Dort gibt es die bestehende Rivalität Lichtacker ↔ Eisenkrone, die wir nur über Ereignisse und Preise berühren, nicht über eine weitere Rivalität.
 - **Lücken, die die Firma schließt:** `ammonia_ice` (heute 7 Produkte), neue Ware `nitrogen_ice`, Energie für den Rand (Isolde, Vaskar).
 - **Spielchancen:** Massengut mit niedriger Marge und langen Wegen, gut für Frachterkapitäne. Saisonale Engpässe über Asteroidensturm und Maschinenausfall. Beziehung zu den Stationsleitern in Vaskar. Freischaltung: Vaskar.
 
@@ -467,7 +502,7 @@ Vorschlag: `since_date` für diese vier Einträge nicht würfeln, sondern auf da
 
 Rahmenverträge (falls eine Tabelle wie `framework_agreements` kommt, mit Verweis von `contracts`):
 1. **„Geleitschutz-Rahmenvertrag Kharon-Korridor“** Ravenmoor ↔ Helix. Darunter fallen die neuen Verträge RCS → Helix. Als Bezug dienen die **103 bestehenden Helix-Verträge ab Kharon-Stationen**: Verträge ab 2059 könnten ein optionales Feld `escort_company_id = ravenmoor` bekommen (die Bestandszeilen selbst bleiben unverändert).
-2. **„Rahmenvertrag Brennus–Kharon“** Eisenkrone → Helix. Er fasst die 8 bestehenden Verträge Brennus → Kharon zusammen, darunter die gebrochenen EKM-VTR-2059-0162 und EKM-VTR-2058-0107, mit Geleitschutzklausel zugunsten von Ravenmoor.
+2. **„Rahmenvertrag Brennus–Kharon“** Eisenkrone → Helix. Er fasst die 8 bestehenden Verträge Brennus → Kharon zusammen, darunter die gebrochenen EKM-VTR-2057-0017 und EKM-VTR-2059-0162 (Andockstau) *(korr. R2)*, mit Geleitschutzklausel zugunsten von Ravenmoor.
 3. **„Versorgungsrahmen Isolde“** Raureif → Pionierwerk sowie Morgengrund → Pionierwerk (neue Verträge, Vertragstyp `framework`).
 
 Schriftverkehr, verankert an echten Objekten:
@@ -475,9 +510,9 @@ Schriftverkehr, verankert an echten Objekten:
 | Absender → Empfänger | Anlass (Bestand) | Inhalt |
 |---|---|---|
 | Ravenmoor → Helix (David Hendricks, Kharon Exchange V) | 8 wegen Geleitschutz gebrochene Verträge, Piratenangriff 74 (2059-12-20) | Angebot Geleitschutz-Rahmenvertrag |
-| Helix (Wayne Jacobson) → Eisenkrone (Claire Rust, Brennus Schacht VII) | HMX-CTR-2059-0242 gebrochen (Medikamente, 9,69 Mio. CR) | Entschuldigung, Verweis auf künftigen Ravenmoor-Geleitschutz |
+| Helix (Wayne Jacobson) → Eisenkrone (Claire Rust, Brennus Schacht VII) | HMX-CTR-2059-0242 gebrochen (Medikamente, 9,69 Mio. CR, Quarantäne +97 h) *(korr. R2)* | Entschuldigung und Erklärung der Quarantäne. Den Geleitschutz-Bezug liefert stattdessen HMX-CTR-2058-0183 |
 | Driftwood (Tina Gould) → Ravenmoor | Razzia 58 auf Smugglers' Haven Hall | Protest und Drohung |
-| Outmark → Feldspat (Theodor Krause) | Fund 52 an der Bergbaustation Becker | Claim-Beschwerde, Vorwurf des Datendiebstahls |
+| Outmark → Feldspat (Theodor Krause, im Amt seit 2057-11-22) | Fund 52 an der Bergbaustation Becker | Claim-Beschwerde, Vorwurf des Datendiebstahls |
 | Lichtacker (Reimar Rörricht) → Pionierwerk | Rivalität Isolde | Verweis auf alte Pachtrechte |
 | Morgengrund → Ravenmoor | Lebensmittellücke in Kharon (0 Angebot bei 20 Nachfrage) | Angebot Rationenlieferung |
 | Eisenkrone → Raureif | Wassereiskonkurrenz in Myrrhen, Lieferung an Station Löchel | Mengenanfrage zum Vorzugspreis |
@@ -512,3 +547,11 @@ Erwartete Stationsverteilung: Isolde 4–6, Serravel 3–5, Vaskar 3–5, Kharon
 8. **Teamübergreifende Kanten:** Nehmt ihr `kuppelwerk → pionierwerk` und `second_hull → graufalk` an (siehe 5.1)? Beide zählen bei euch je einen Platz.
 6. **Rahmenverträge und Schriftverkehr:** Wer entwirft das Tabellenschema? Unser Vorschlag: `framework_agreements` (Verkäufer, Käufer, optional `escort_company_id`, Laufzeit, Volumen) mit `contracts.framework_id`, und `correspondence` (Absender- und Empfängermitarbeiter, Datum, Sprache, Bezug auf contract, order oder event).
 7. **Rivalitätstyp `armed_conflict`:** Einverstanden, oder habt ihr eigene neue Typen, die wir zusammenführen sollten?
+
+### 7.1 Offene Fragen nach Revision 2 (an Team A)
+
+Die Fragen 1–8 sind in Phase 2 beantwortet. Neu sind nur noch:
+
+- **R2-1:** Euer Bestandsvergleich (QA 6/6/6) sollte auch die in Abschnitt 0 genannten Ankerobjekte prüfen: die 8 Geleitschutzbrüche, HMX-CTR-2059-0242 und die Ereignisse 26, 52, 58 und 74. Sonst laufen die Schreiben von Team B ins Leere, falls sich der Bestandsstrom doch verschiebt. Übernehmt ihr das?
+- **R2-2:** Prüft eure Schreiben bitte ebenfalls gegen `employees.hire_date`. Bei uns waren Krause, Hines und Garcia betroffen.
+- **R2-3:** Die Rohstofflücken in Sol (1/40) und Aurelis (1/24) liegen im Kerngebiet und damit in eurem Themenfeld. Deckt ihr sie mit Graufalk oder Kuppelwerk ab, oder sollen wir Second Hull dafür stärker nach Brennus und Sol ausrichten? Das ginge nur über `territory`, eine neue Vereinbarung ist nicht nötig.

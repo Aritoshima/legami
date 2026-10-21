@@ -1,11 +1,13 @@
 {
  "meta": {
-  "stand": "2026-10-20",
+  "stand": "2026-10-21",
   "phase": 2,
+  "revision": "R2 (Neudurchlauf, halbe Besetzung)",
   "entscheidung": "planung/phase2_entscheidung.md",
-  "basis": "Bestand Seed 42, /home/user/bestand/space_trading_game_bestand.db",
+  "basis": "Bestand Seed 42, /home/user/bestand/space_trading_game_bestand.db (nur lesend)",
   "active_agreements_total": 48,
-  "note_partnerships": "13 Bestand-Blueprint + 34 neue Kanten; helix->corvane bleibt in optional_partnerships (im Bestand gewürfelt aktiv)"
+  "note_partnerships": "13 Bestand-Blueprint + 34 neue Kanten = 47 feste; helix->corvane bleibt in optional_partnerships (Bestandsstrom, Seed 42 aktiv) -> 48 aktiv",
+  "r2_sources": "Netz/Historie/Rivalitäten unverändert; Rahmen = Team A R2 (enthält K1/K2/K6/K7/K10 von B + Δ1–Δ3) + K9 von B; Filter = K8 ∪ Δ4; Rivalitäts-Informanten = Δ6; Vorgänge V1–V41"
  },
  "partnerships": [
   [
@@ -467,8 +469,12 @@
    ],
    "informants": [
     170,
+    235
+   ],
+   "targets_hard_to_buy": [
     178
-   ]
+   ],
+   "r2_change": "Freddy Dörr (235, Sicherheit Förster, Loyalität 45, Bestechlichkeit 88) ergänzt; Schuchhardt (178, 85/25) erfüllt die Leck-Regel nicht und ist nur Zielperson"
   },
   {
    "company_key": "cindervale",
@@ -487,9 +493,13 @@
     "HMX-CTR-2058-0121"
    ],
    "informants": [
-    299,
+    319,
+    299
+   ],
+   "witnesses": [
     120
-   ]
+   ],
+   "r2_change": "Darren Harris (319, Helix-Marktaufklärung seit 2056-02-19, 35/69) ergänzt, damit es vor 2059-11-24 einen Helix-internen Informanten gibt; Chavez ist Corvane (Dritter)"
   },
   {
    "company_key": "emberline",
@@ -506,9 +516,17 @@
     "EKM-VTR-2059-0167"
    ],
    "informants": [
+    170
+   ],
+   "witnesses": [
     83,
     45
-   ]
+   ],
+   "r2_change": "Eberhardt (45, 75/23) und Zahn (83) sind Lichtacker, also Zeugen, keine Lecks bei Eisenkrone; Leck-Quelle bei Eisenkrone ist Esther Bauer (170)",
+   "third_party_leaks": [
+    83
+   ],
+   "r2_note_referee": "Polina Zahn (83, Lichtacker, 55/88) erfüllt die Leck-Regel und bleibt Absenderin des Tipps in V28 (leaked_by 83, Lichtacker-Interna an Emberline); Eberhardt (45) nur Zeuge"
   },
   {
    "company_key": "lichtacker",
@@ -708,7 +726,13 @@
    "cumulative_over_90pct": "kumulierte Summe (ohne storniert) > 90 % der Obergrenze -> Erhöhung zum Monatsersten des auslösenden Vertrags; Auslöser 2060 -> proposed, angeboten im Dezember 2059",
    "calloff_after_end": "Abruf beginnt nach Laufzeitende -> Verlängerung, wirksam 60 Tage vor Ablauf"
   },
-  "new_pairs_contract_rule": "vor Rahmenbeginn nur spot/emergency_supply/consignment; danach bisherige Gewichte; framework-Typen nur für Waren im Scope"
+  "new_pairs_contract_rule": "vor Rahmenbeginn nur spot/emergency_supply/consignment; danach bisherige Gewichte; framework-Typen nur für Waren im Scope",
+  "qa_r2": [
+   "Jede Scope-Kategorie bzw. jeder scope_archetype hat beim Käufer einen verbrauchenden Stationstyp (Δ3)",
+   "Volumen-Auslöser im Bestand = 13 Vertragsnummern (anchor_contracts der volume_increase-Nachträge mit rule cumulative_over_90pct bei Bestandspaaren)",
+   "Neue Verkäufer verletzen keine Exklusivität aus exclusivity_filter_new_pairs; Vorkaufsrechte ohne Filter",
+   "HMX-MSA-2057-02 nur bei gezogenem helix->corvane (K9)"
+  ]
  },
  "framework_agreements": [
   {
@@ -937,7 +961,8 @@
      ],
      "rule": "cumulative_over_90pct"
     }
-   ]
+   ],
+   "condition": "K9: nur anlegen, wenn OPTIONAL_PARTNERSHIPS helix -> corvane gezogen wird (Seed 42: ja)"
   },
   {
    "number": "HMX-MSA-2057-03",
@@ -966,11 +991,30 @@
      "effective_date": "2057-07-01",
      "status": "signed",
      "categories": [
-      "medical",
-      "technology",
+      "medical"
+     ],
+     "rule": "first_contract_of_category",
+     "r2_change": "einzeln nach Regel first_contract_of_category"
+    },
+    {
+     "type": "product_addition",
+     "effective_date": "2057-09-01",
+     "status": "signed",
+     "categories": [
+      "technology"
+     ],
+     "rule": "first_contract_of_category",
+     "r2_change": "einzeln nach Regel first_contract_of_category"
+    },
+    {
+     "type": "product_addition",
+     "effective_date": "2057-11-01",
+     "status": "signed",
+     "categories": [
       "industrial_goods"
      ],
-     "rule": "first_contract_of_category"
+     "rule": "first_contract_of_category",
+     "r2_change": "einzeln nach Regel first_contract_of_category"
     },
     {
      "type": "volume_reduction",
@@ -1045,10 +1089,20 @@
      "effective_date": "2057-05-01",
      "status": "signed",
      "categories": [
-      "luxury",
+      "luxury"
+     ],
+     "rule": "first_contract_of_category",
+     "r2_change": "einzeln nach Regel first_contract_of_category"
+    },
+    {
+     "type": "product_addition",
+     "effective_date": "2057-06-01",
+     "status": "signed",
+     "categories": [
       "technology"
      ],
-     "rule": "first_contract_of_category"
+     "rule": "first_contract_of_category",
+     "r2_change": "einzeln nach Regel first_contract_of_category"
     },
     {
      "type": "penalty_clause",
@@ -1120,10 +1174,20 @@
      "effective_date": "2057-06-01",
      "status": "signed",
      "categories": [
-      "food",
+      "food"
+     ],
+     "rule": "first_contract_of_category",
+     "r2_change": "einzeln nach Regel first_contract_of_category"
+    },
+    {
+     "type": "product_addition",
+     "effective_date": "2057-10-01",
+     "status": "signed",
+     "categories": [
       "technology"
      ],
-     "rule": "first_contract_of_category"
+     "rule": "first_contract_of_category",
+     "r2_change": "einzeln nach Regel first_contract_of_category"
     },
     {
      "type": "product_addition",
@@ -1171,9 +1235,8 @@
      "initiated_by": "helix",
      "escort_key": "ravenmoor",
      "anchor_contracts": [
-      "EKM-VTR-2057-0017",
-      "EKM-VTR-2058-0107",
-      "EKM-VTR-2059-0162"
+      "EKM-VTR-2057-0043",
+      "EKM-VTR-2058-0107"
      ],
      "anchor_orders": [
       "EKM-BST-2059-02343"
@@ -1181,7 +1244,12 @@
      "anchor_events": [
       74
      ],
-     "linked_amendment": "RCS-MSA-2058-01#escort_clause"
+     "linked_amendment": "RCS-MSA-2058-01#escort_clause",
+     "berth_anchor_contracts": [
+      "EKM-VTR-2057-0017",
+      "EKM-VTR-2059-0162"
+     ],
+     "r2_change": "K2 (Team B): Geleitschutz-Anker sind die echten Geleitschutzbrüche; die Andockstau-Brüche begründen Ausweich-Liegeplätze an Ravenmoors Handelsstation Kharon"
     },
     {
      "type": "volume_increase",
@@ -1329,7 +1397,7 @@
     "quantum_quartz"
    ],
    "expected_assigned_contracts": 5,
-   "story": "Feldspat schuldet Eisenkrone 25,5 Mio. CR (13 überfällige Bestellungen); das Vorkaufsrecht auf Quantenquarz ist das Pfand",
+   "story": "Feldspat schuldet Eisenkrone nach Datum 22,94 Mio. CR (2059-07-20, 11 Bestellungen), 24,22 Mio. (2059-08-01, 12) und ab 2059-09-23 25,52 Mio. (13); das Vorkaufsrecht auf Quantenquarz ist das Pfand (K10 Team B)",
    "amendments": [
     {
      "type": "price_adjustment",
@@ -1399,13 +1467,18 @@
      "type": "service_level_clause",
      "effective_date": "2060-01-15",
      "status": "proposed",
-     "proposed_date": "2059-12-28",
+     "proposed_date": "2059-12-31",
      "initiated_by": "helix",
      "anchor_orders": [
       "HMX-ORD-2059-01763",
       "HMX-ORD-2059-01788"
      ],
-     "note": "Eilabrufklausel Triebwerksteile"
+     "note": "K6: Eilabrufklausel Triebwerksteile nach zwei Triebwerksschäden (HMX-SHP-2059-01721 +99 h, HMX-SHP-2059-01746 +38 h); HMX-ORD-2059-01788 existiert erst ab 2059-12-29",
+     "r2_change": "K6 (Team B): HMX-ORD-2059-01788 entsteht erst 2059-12-29",
+     "anchor_shipments": [
+      "HMX-SHP-2059-01721",
+      "HMX-SHP-2059-01746"
+     ]
     }
    ]
   },
@@ -1458,7 +1531,8 @@
      "initiated_by": "cindervale",
      "note": "nach der Aussetzung CCI-MSA-2057-01 und dem Gerücht vom 2059-12-27"
     }
-   ]
+   ],
+   "protected_by_generator_filter": true
   },
   {
    "number": "GFW-RV-2058-01",
@@ -1517,14 +1591,11 @@
    "base_volume_mcr": 120,
    "price_formula": "fixed",
    "indexation": "none",
-   "exclusivity": "buyer_exclusive",
+   "exclusivity": "right_of_first_refusal",
    "notice_days": 180,
    "scope": [
     "technology",
     "industrial_goods"
-   ],
-   "exclusive_categories": [
-    "technology"
    ],
    "exclusivity_system": "halcyon",
    "status_at_reference": "suspended",
@@ -1562,7 +1633,12 @@
      ],
      "note": "Aussetzung bis zum Firmware-Audit; Kündigungsandrohung zum 2060-06-03 im Schreiben vom 2059-12-05"
     }
-   ]
+   ],
+   "r2_change": "K1 (Team B) = Δ1 (Team A): Vorkaufsrecht statt Käuferexklusivität, weil Corvane im Bestand Technik an Bergbaustation Hande liefert (CVB-CTR-2058-0003/-0013/-0038, -2059-0044, -2059-0066 exclusive_supply bis 2060-08-05, 25 Bestellungen); Folge-Vorgang V39",
+   "exclusive_categories": [
+    "technology"
+   ],
+   "follow_up_thread": "V39"
   },
   {
    "number": "KHB-RV-2058-01",
@@ -1660,7 +1736,14 @@
       "habitat_modules"
      ]
     }
-   ]
+   ],
+   "scope_archetypes": {
+    "raw_materials": [
+     "regolith",
+     "water_ice"
+    ]
+   },
+   "r2_change": "Rohstoff-Scope auf regolith/water_ice begrenzt: Lichtacker hat nur agricultural/research-Stationen, andere Rohstoffe haben dort keinen Verbraucher"
   },
   {
    "number": "EFF-MSA-2059-01",
@@ -1806,7 +1889,8 @@
       74
      ]
     }
-   ]
+   ],
+   "protected_by_generator_filter": true
   },
   {
    "number": "RVF-RV-2058-01",
@@ -1826,13 +1910,12 @@
     "energy"
    ],
    "exclusive_archetypes": [
-    "water_ice",
-    "nitrogen_ice"
+    "water_ice"
    ],
    "exclusivity_system": "isolde",
    "amendments": [
     {
-     "type": "product_addition",
+     "type": "exclusivity_clause",
      "effective_date": "2058-09-01",
      "status": "signed",
      "proposed_date": "2058-08-15",
@@ -1840,7 +1923,10 @@
      "archetypes": [
       "nitrogen_ice"
      ],
-     "note": "Terraforming beginnt; Stickstoffeis fällt ab hier unter die Exklusivität"
+     "note": "Terraforming beginnt; Stickstoffeis fällt ab hier unter die Exklusivität",
+     "exclusivity": "regional_exclusive",
+     "system_code": "isolde",
+     "r2_change": "K7 (Team B): Stickstoffeis erst ab diesem Nachtrag exklusiv"
     },
     {
      "type": "volume_increase",
@@ -1859,7 +1945,9 @@
      "pct": 10,
      "note": "lange Wege, Piraterie"
     }
-   ]
+   ],
+   "protected_by_generator_filter": true,
+   "r2_change": "K7 (Team B) übernommen"
   },
   {
    "number": "RVF-RV-2058-02",
@@ -2144,8 +2232,9 @@
   ],
   "random_stream": "random.Random(f'{seed}:correspondence'); für Bestandsfirmen nur vorhandene Mitarbeiter",
   "estimated_volume": {
-   "bestand_objects": 850,
-   "all_18_companies": "2.200–2.800"
+   "bestand_objects": 860,
+   "all_18_companies": "2.200–2.800",
+   "note": "R2: +4 Produktaufnahme-Schreiben (Δ2), +6 Schreiben V39–V41"
   },
   "qa": [
    "Absender/Empfänger gehören zur Firma und sind am sent_at beschäftigt",
@@ -2154,8 +2243,490 @@
    "delay_complaint nur bei echter Verspätung oder Status delayed",
    "Antworten nach dem Bezugsschreiben, alle sent_at < 2060-01-01",
    "language = Sprache der Absenderfirma; is_accurate nur bei confidential_tip/rumor",
-   "jeder rumor/confidential_tip mit Leck-Mitarbeiter: bribe_susceptibility >= 50 oder loyalty <= 50"
+   "jeder rumor/confidential_tip mit Leck-Mitarbeiter: bribe_susceptibility >= 50 oder loyalty <= 50",
+   "payment_reminder frühestens Fälligkeit (Ankunft + 30 T) + 3 T; Stufen +3..7 / +21 / +45 T (K3–K5)",
+   "kein Schreiben vor seinem Bezugsobjekt (order_date, start_date, departure_date, event_date) (K6)",
+   "Unterzeichner der Rahmen am signed_date beschäftigt; neue Firmen über hire_date_caps_new_firms (Δ8)",
+   "Leck-Absender (leaked_by) erfüllen die Leck-Regel; Zeugen/Ziele in rivalry_details sind keine Leck-Quellen (Δ6)"
   ],
-  "anchored_threads": "siehe phase2_entscheidung.md, Abschnitt 6.3 (verbindliche Liste mit echten IDs)"
+  "anchored_threads": "siehe phase2_entscheidung.md, Abschnitt 6.3 (verbindliche Liste V1–V41 mit echten IDs, Stand R2)",
+  "anchored_thread_changes_r2": [
+   {
+    "id": "V1",
+    "dates": [
+     "2057-08-28",
+     "2057-09-13",
+     "2057-10-07"
+    ],
+    "source": "K4 Team B",
+    "reason": "EKM-BST-2057-00352 Ankunft 2057-07-24, fällig 2057-08-23; Stufen +5/+21/+45 T"
+   },
+   {
+    "id": "V14",
+    "dates": [
+     "2059-01-27",
+     "2059-01-28",
+     "2059-02-05"
+    ],
+    "rumor_sender": 43,
+    "leaked_by": 43,
+    "source": "Δ7 Team A",
+    "reason": "Erkan Hesse (39, 68/43) erfüllt die Leck-Regel nicht; Gerücht nach dem Strafbescheid V13 (2059-01-25)"
+   },
+   {
+    "id": "V22",
+    "amounts_mcr": {
+     "offer_2059-07-20": 22.94,
+     "signature_2059-08-01": 24.22
+    },
+    "source": "K10 Team B"
+   },
+   {
+    "id": "V27",
+    "date": "2059-10-14",
+    "orders": 13,
+    "amount": 25522655.14,
+    "source": "K3 Team B"
+   },
+   {
+    "id": "V32",
+    "date": "2059-03-29",
+    "source": "K5 Team B",
+    "reason": "EKM-BST-2059-01408 fällig 2059-02-12, Stufe 3 = +45 T"
+   },
+   {
+    "id": "V36",
+    "date": "2059-12-31",
+    "sender": 332,
+    "anchor_shipments": [
+     "HMX-SHP-2059-01721",
+     "HMX-SHP-2059-01746"
+    ],
+    "source": "K6 Team B",
+    "reason": "HMX-ORD-2059-01788 erst am 2059-12-29 bestellt"
+   },
+   {
+    "id": "V39",
+    "source": "K1 Team B",
+    "steps": [
+     {
+      "date": "2059-08-28",
+      "type": "rumor",
+      "sender": "Richard Chavez 120 (leaked_by, Corvane)",
+      "recipient": "Cindervale Marktaufklärung",
+      "is_accurate": 1,
+      "confidentiality": "confidential",
+      "refs": {
+       "contract": "CVB-CTR-2059-0066"
+      }
+     },
+     {
+      "date": "2059-09-02",
+      "type": "breach_warning",
+      "sender": "Cindervale-Vorstand",
+      "recipient": "Roswitha van der Dussen 168 (cc Esther Bauer 170)",
+      "refs": {
+       "framework": "CCI-MSA-2057-01"
+      }
+     },
+     {
+      "date": "2059-09-12",
+      "type": "breach_warning (Antwort)",
+      "sender": "Esther Bauer 170",
+      "recipient": "Cindervale",
+      "refs": {
+       "events": [
+        19,
+        36
+       ]
+      }
+     }
+    ]
+   },
+   {
+    "id": "V40",
+    "source": "Δ Team A",
+    "date": "2059-06-04",
+    "types": [
+     "internal_memo"
+    ],
+    "sender": "Reimar Rörricht 38 -> Lena Heß 40",
+    "content": "Verdacht gegen Erkan Hesse (39) wegen der Weitergabe des Strafbescheids; Hesse wird am 2059-06-11 entlassen (Bestand). Der wahre Leck ist Täsche (V14, leaked_by 43) – Spionage-Rätsel",
+    "confidentiality": "confidential",
+    "refs": {
+     "correspondence": "V14"
+    }
+   },
+   {
+    "id": "V41",
+    "source": "Δ6 Team A",
+    "date": "2058-11-20",
+    "types": [
+     "confidential_tip"
+    ],
+    "sender": "Freddy Dörr 235 (leaked_by) -> Graufalk Marktaufklärung",
+    "content": "Ausfallprotokoll Förster nach Ereignis 36",
+    "confidentiality": "business",
+    "is_accurate": 1,
+    "refs": {
+     "event": 36,
+     "rivalry": "graufalk-eisenkrone"
+    }
+   }
+  ]
+ },
+ "exclusivity_filter_new_pairs": [
+  {
+   "seller_keys": [
+    "emberline"
+   ],
+   "buyer_key": "corvane",
+   "categories": [
+    "energy"
+   ],
+   "until": "2059-03-14",
+   "reason": "HMX-MSA-2057-02 Energie käuferexklusiv (K8)"
+  },
+  {
+   "seller_keys": [
+    "kuppelwerk"
+   ],
+   "buyer_key": "lichtacker",
+   "categories": [
+    "industrial_goods"
+   ],
+   "until": "2059-03-14",
+   "reason": "Vorkaufsrecht Helix, Absage V14 (K8)"
+  },
+  {
+   "seller_keys": [
+    "graufalk"
+   ],
+   "buyer_key": "helix",
+   "archetypes": [
+    "escort_drones",
+    "sensor_arrays"
+   ],
+   "system": "kharon",
+   "from": "2058-08-01",
+   "reason": "RCS-MSA-2058-01 regional exklusiv"
+  },
+  {
+   "seller_keys": [
+    "emberline",
+    "kometenpost"
+   ],
+   "buyer_key": "cindervale",
+   "archetypes": [
+    "drive_parts"
+   ],
+   "from": "2058-03-15",
+   "reason": "GFW-RV-2057-02 gegenseitig"
+  },
+  {
+   "seller_keys": [
+    "emberline",
+    "lanternfish",
+    "second_hull",
+    "kuppelwerk"
+   ],
+   "buyer_key": "graufalk",
+   "archetypes": [
+    "nav_computers"
+   ],
+   "from": "2058-03-15",
+   "reason": "GFW-RV-2057-02 gegenseitig"
+  },
+  {
+   "seller_keys": [
+    "second_hull",
+    "outmark",
+    "morgengrund",
+    "kuppelwerk"
+   ],
+   "buyer_key": "pionierwerk",
+   "archetypes": [
+    "water_ice"
+   ],
+   "system": "isolde",
+   "from": "2058-01-01",
+   "reason": "RVF-RV-2058-01 regional exklusiv"
+  },
+  {
+   "seller_keys": [
+    "second_hull",
+    "outmark",
+    "morgengrund",
+    "kuppelwerk"
+   ],
+   "buyer_key": "pionierwerk",
+   "archetypes": [
+    "nitrogen_ice"
+   ],
+   "system": "isolde",
+   "from": "2058-09-01",
+   "reason": "RVF-RV-2058-01 Nachtrag (K7)"
+  },
+  {
+   "seller_key": "kuppelwerk",
+   "archetypes": [
+    "habitat_modules"
+   ],
+   "system": "isolde",
+   "from": "2058-06-01",
+   "allowed_buyer": "pionierwerk",
+   "reason": "KHB-RV-2058-01 verkäuferexklusiv"
+  }
+ ],
+ "hire_date_caps_new_firms": {
+  "rule": "Durchlauf 2: executive, erste relations und erste intelligence jeder neuen Firma bekommen hire_date <= min(frühestes verankertes Schreiben, Rahmenbeginn - 30 T) - 30 T; signed_date eines Rahmens = start_date - 30 T; gilt nur im Erweiterungsstrom",
+  "caps": {
+   "graufalk": "2056-11-02",
+   "cindervale": "2056-11-02",
+   "kuppelwerk": "2058-04-02",
+   "emberline": "2059-01-31",
+   "kometenpost": "2059-04-12",
+   "lanternfish": null,
+   "pionierwerk": "2057-11-02",
+   "ravenmoor": "2058-05-16",
+   "raureif": "2057-11-02",
+   "outmark": "2057-12-03",
+   "morgengrund": "2058-11-02",
+   "second_hull": "2058-03-02"
+  }
+ },
+ "qa_anchor_objects": {
+  "contracts": [
+   "CVB-CTR-2058-0003",
+   "CVB-CTR-2058-0013",
+   "CVB-CTR-2058-0038",
+   "CVB-CTR-2059-0044",
+   "CVB-CTR-2059-0066",
+   "EKM-VTR-2057-0002",
+   "EKM-VTR-2057-0012",
+   "EKM-VTR-2057-0017",
+   "EKM-VTR-2057-0043",
+   "EKM-VTR-2057-0064",
+   "EKM-VTR-2058-0099",
+   "EKM-VTR-2058-0105",
+   "EKM-VTR-2058-0107",
+   "EKM-VTR-2058-0132",
+   "EKM-VTR-2059-0151",
+   "EKM-VTR-2059-0156",
+   "EKM-VTR-2059-0160",
+   "EKM-VTR-2059-0162",
+   "EKM-VTR-2059-0167",
+   "EKM-VTR-2059-0197",
+   "EKM-VTR-2059-0211",
+   "EKM-VTR-2060-0219",
+   "EKM-VTR-2060-0230",
+   "EKM-VTR-2060-0234",
+   "FSP-VTR-2059-0001",
+   "FSP-VTR-2059-0019",
+   "HMX-CTR-2057-0010",
+   "HMX-CTR-2057-0012",
+   "HMX-CTR-2057-0014",
+   "HMX-CTR-2057-0019",
+   "HMX-CTR-2057-0043",
+   "HMX-CTR-2057-0050",
+   "HMX-CTR-2057-0077",
+   "HMX-CTR-2057-0098",
+   "HMX-CTR-2058-0121",
+   "HMX-CTR-2058-0131",
+   "HMX-CTR-2058-0139",
+   "HMX-CTR-2058-0152",
+   "HMX-CTR-2058-0159",
+   "HMX-CTR-2058-0161",
+   "HMX-CTR-2058-0173",
+   "HMX-CTR-2058-0183",
+   "HMX-CTR-2059-0192",
+   "HMX-CTR-2059-0197",
+   "HMX-CTR-2059-0213",
+   "HMX-CTR-2059-0235",
+   "HMX-CTR-2059-0236",
+   "HMX-CTR-2059-0242",
+   "HMX-CTR-2059-0246",
+   "HMX-CTR-2059-0257",
+   "HMX-CTR-2059-0259",
+   "HMX-CTR-2060-0275",
+   "HMX-CTR-2060-0281",
+   "LAK-VTR-2058-0008",
+   "LAK-VTR-2058-0033",
+   "LAK-VTR-2058-0039"
+  ],
+  "orders": [
+   "DWS-ORD-2059-00107",
+   "EKM-BST-2057-00352",
+   "EKM-BST-2059-01408",
+   "EKM-BST-2059-01903",
+   "EKM-BST-2059-02343",
+   "FSP-BST-2059-00111",
+   "HMX-ORD-2059-01645",
+   "HMX-ORD-2059-01763",
+   "HMX-ORD-2059-01788"
+  ],
+  "shipments": [
+   "HMX-SHP-2059-01012",
+   "HMX-SHP-2059-01094"
+  ],
+  "events": [
+   3,
+   8,
+   10,
+   16,
+   18,
+   19,
+   24,
+   26,
+   27,
+   29,
+   30,
+   34,
+   36,
+   37,
+   45,
+   51,
+   52,
+   53,
+   54,
+   57,
+   58,
+   59,
+   61,
+   65,
+   66,
+   67,
+   69,
+   70,
+   71,
+   72,
+   74
+  ],
+  "employees": [
+   1,
+   2,
+   4,
+   9,
+   16,
+   23,
+   26,
+   27,
+   29,
+   33,
+   38,
+   39,
+   40,
+   41,
+   42,
+   43,
+   45,
+   47,
+   49,
+   83,
+   115,
+   118,
+   119,
+   120,
+   123,
+   168,
+   169,
+   170,
+   171,
+   172,
+   174,
+   175,
+   178,
+   179,
+   235,
+   254,
+   293,
+   294,
+   299,
+   301,
+   302,
+   304,
+   307,
+   308,
+   319,
+   332,
+   370,
+   395,
+   445
+  ],
+  "compare": {
+   "contracts": [
+    "company_id",
+    "partner_company_id",
+    "contract_type",
+    "start_date",
+    "deadline",
+    "status",
+    "total_value",
+    "penalty_per_day"
+   ],
+   "orders": [
+    "order_date",
+    "status",
+    "payment_status",
+    "total_amount"
+   ],
+   "shipments": [
+    "arrival_date",
+    "actual_arrival_date",
+    "risk_incident"
+   ],
+   "events": [
+    "event_date",
+    "event_type",
+    "station_id",
+    "severity"
+   ],
+   "employees": [
+    "full_name",
+    "company_id",
+    "role_code",
+    "hire_date",
+    "termination_date",
+    "loyalty",
+    "bribe_susceptibility",
+    "intel_access_level"
+   ]
+  },
+  "expected_assigned_contracts_total": 341,
+  "note": "PKB-VTR-2058-0001 entfernt (keine Bestandsnummer, nur Beispiel aus phase1_team_b.md); HMX-CTR-2059-0235 bleibt als Vergleichsobjekt (existiert, ist aber nicht der Volumen-Auslöser)"
+ },
+ "profile_changes_new_firms": {
+  "kuppelwerk": {
+   "required_stations": [
+    [
+     "industrial",
+     "aurelis"
+    ],
+    [
+     "mining",
+     "myrrhen"
+    ],
+    [
+     "mining",
+     "aurelis"
+    ]
+   ],
+   "source": "Δ9 Team A (Antwort auf R2-3)",
+   "reason": "Rohstofflücke Aurelis 1/24; medium erlaubt 4–6 Stationen"
+  },
+  "morgengrund": {
+   "required_stations": [
+    [
+     "agricultural",
+     "isolde"
+    ],
+    [
+     "trade_hub",
+     "isolde"
+    ]
+   ],
+   "source": "K11 Team B",
+   "reason": "Verbraucherabdeckung pionierwerk->morgengrund 52 % -> 100 %; small erlaubt 2–3 Stationen"
+  }
  }
 }

@@ -1,6 +1,7 @@
 # Phase 1 – Team A: Kernraum, Hochtechnologie und Infrastruktur
 
-Stand: 20.10.2026 · Grundlage: `generate_space_trading_data.py` (Seed 42) und der Datenbestand in
+Stand: 20.10.2026, erneut geprüft am 21.10.2026 (Neudurchlauf, siehe Abschnitt 7) · Grundlage:
+`generate_space_trading_data.py` (Seed 42) und der Datenbestand in
 `/home/user/bestand/space_trading_game_bestand.db` (ausgewertet mit pandas/sqlite3, nur lesend).
 
 Kurzfassung: Team A schlägt **6 Firmen** vor (je 2 small, medium und large; 3 × de_DE, 3 × en_US), dazu **1 neues
@@ -115,9 +116,9 @@ neuen Lieferverträge begründet.
 |---|---|---|---|---|
 | 178 | Annekatrin Schuchhardt | Eisenkrone, Stationsleitung, Industriestation Förster | 71 / 85 / 25 | Kennt die Ausfallprotokolle; loyal, also schwer zu kaufen |
 | 170 | Esther Bauer | Eisenkrone, Partnerbetreuung, Freudenberger-Werk | 62 / 53 / 76 | Ansprechpartnerin für Graufalk und Cindervale, bestechlich |
-| 171, 172 | Dolores Mühle, Josip Sölzer | Eisenkrone, Marktaufklärung | intel 3, Loyalität 96 / 87 | Ermitteln gegen Cindervale-Firmware |
-| 168 | Roswitha van der Dussen | Eisenkrone, Vorstand | ehrgeizig | Gegenspielerin von Graufalk |
-| 299 | Desiree Schwartz | Helix, Marktaufklärung, Sol Exchange II | Bestechlichkeit 78, gierig | Lecks über Helix-Lieferprobleme (für Cindervale, Kuppelwerk) |
+| 171, 172 | Dolores Mühle, Josip Sölzer | Eisenkrone, Marktaufklärung | intel 3, Loyalität 96 / 87 | Ermitteln gegen Cindervale-Firmware (Sölzer seit 2052; Mühle erst ab Einstellung 2058-11-10, also ab Ereignis 36) |
+| 168 | Roswitha van der Dussen | Eisenkrone, Vorstand (seit 2059-07-07) | ehrgeizig | Gegenspielerin von Graufalk, nur für Vorgänge ab Mitte 2059 |
+| 299 | Desiree Schwartz | Helix, Marktaufklärung, Sol Exchange II (seit 2059-11-24) | Bestechlichkeit 78, gierig | Lecks über Helix-Lieferprobleme (für Cindervale, Kuppelwerk), nur ab Ende 2059 |
 | 301 | Kurt Sullivan | Helix, Stationsleitung, Sol Exchange II | 70 / 70 / 50 | Empfänger beim Bauboom (Kuppelwerk, Lanternfish) |
 | 47 | Toralf Gerlach | Lichtacker, Stationsleitung, Tauvel Labor II | 69 / 86 / 20 | Wartet auf den Verbundstahl aus den gebrochenen Helix-Verträgen |
 | 45 | Hans-Werner Eberhardt | Lichtacker, Stationsleitung, Agrarstation Seip | 66 / 75 / 23 | Energie-Engpass und Piratenangriff (Ereignis 27) |
@@ -598,3 +599,32 @@ die 6 Bestandsfirmen andere Stationen, Koordinaten, Produkte und Mitarbeiter. Un
    zu 3, Kuppelwerk bis zu 3). Habt ihr Rohstoff- oder Agrarlieferanten, die Graufalk oder Kuppelwerk beliefern sollen?
    Dann würde Kuppelwerk Habitatmodule an eure Kolonien liefern.
 6. **SKU-Präfixe**: Wir verwenden GFW, CCI, KHB, EFF, KPK und LFL. Bitte nicht doppelt vergeben.
+
+---
+
+## 7. Prüfvermerk Neudurchlauf (21.10.2026)
+
+Der Bericht wurde im erneuten Phase-1-Durchlauf gegen Skript und Bestands-DB nachgeprüft. Die 6 Firmen, das System
+`pellora`, die 5 Archetypen und die SKU-Präfixe bleiben **unverändert**, weil `phase2_entscheidung.md` und
+`verknuepfungen.json` (verbindlich) bereits darauf aufbauen. Ein neuer Entwurf würde diese Entscheidung entwerten.
+
+Nachgeprüft (alle Werte bestätigt):
+
+- Alle 20 zitierten Vertragsnummern gibt es, alle sind `breached`, die Werte stimmen (z. B. HMX-CTR-2058-0159 17,18 Mio.).
+  Insgesamt sind 80 Verträge gebrochen (328,25 Mio. CR).
+- Die Ereignisse 3, 8, 10, 18, 19, 24, 27, 29, 30, 34, 36, 37, 59, 69, 70 und 72 stimmen in Datum, Typ und Station.
+  19, 36 und 70 sind Maschinenausfälle in Station 22 (Förster).
+- Stationen je System: Sol 6, Halcyon 5, Tauvel 3, Aurelis 5, Myrrhen 3, **Orrin 0**, **Isolde 0**.
+- Lücken je System bestätigt: Myrrhen Industriegüter 0 vs. 26 und Technik 0 vs. 17, Aurelis Industriegüter 3 vs. 22 und
+  Rohstoffe 1 vs. 24, Sol Luxus 14 vs. 38 und Rohstoffe 1 vs. 40, Tauvel Energie und Technik 0 Angebote. Energie
+  insgesamt 61 Angebote vs. 94 Nachfragen. 463 verspätete Lieferungen.
+- Mitarbeiter-IDs, Rollen und Werte stimmen. Neu vermerkt sind die späten Einstellungsdaten (Mühle, van der Dussen,
+  Schwartz, siehe Tabelle 1.2). Das deckt sich mit dem Datumshinweis in Phase 2.
+- Präfixregel: GFW, CCI, KHB, EFF, KPK und LFL liegen alle im Bereich A–M, kollidieren nicht mit dem Bestand und nicht
+  mit Team B (PKB, RCS, RVF, OSP, SGM, SHR).
+- Eisenkrone wurde 2033 gegründet. Die Graufalk-Gründung 2035–2038 als Ausgliederung der Eisenkrone-Werftsparte ist
+  damit zeitlich möglich.
+
+Spätere Präzisierungen aus Phase 2 (siehe `phase2_entscheidung.md`) gehen vor diesem Bericht: Exklusivitäten sind
+jetzt Vorkaufsrechte, `emberline → lichtacker` ist hinzugekommen, und statt eines neuen Rivalitätstyps werden
+`RIVALRY_TEXT_OVERRIDES` verwendet.

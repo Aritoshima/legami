@@ -18,11 +18,35 @@ laufende Lieferungen reichen in die Zukunft.
 Die Sternensysteme haben eine Freischaltstufe (`unlock_tier`): Sol ist ab Spielbeginn
 erreichbar, weiter entfernte Systeme werden nach und nach freigeschaltet.
 
+Firmen, Bestandsschutz und Rahmenverträge
+-----------------------------------------
+Die Welt enthält 18 Raumhandelsgesellschaften (je 6 small/medium/large, Deutsch und Englisch).
+Die ersten sechs Firmen sind der „Bestand“: Ihre Daten entstehen in jedem Schritt zuerst und mit
+dem gemeinsamen Zufallsstrom (`world.rng`, Faker-Instanzen je Sprache) – genau wie vor der
+Erweiterung. Die zwölf neuen Firmen erzeugen ihre Daten danach in eigenen Zufallsströmen, die aus
+(Seed, Firmen-key, Schritt) abgeleitet sind („Durchlauf 2“). Neue Firmen verschieben die
+Zufallsfolge der Bestandsfirmen deshalb nicht: Bei Seed 42 sind alle Bestandszeilen identisch mit
+dem Datenstand vor der Erweiterung. Neue Vereinbarungen mit Bestandsfirmen gibt es nur in der
+Richtung „neue Firma → Bestandsfirma“, damit Routen, Verträge und Kunden der Bestandsfirmen
+stabil bleiben.
+
+Rahmenverträge (`framework_agreements`) bündeln die Einzelverträge eines Paares. Nachträge
+(`framework_agreement_amendments`) erweitern Sortiment, Volumen und Laufzeit; Regel-Nachträge
+werden aus den Einzelverträgen abgeleitet (erster Abruf einer Kategorie, kumulierte Summe über
+90 % des Rahmenvolumens, Abruf nach Laufzeitende) und liegen immer zeitlich vor den Verträgen, die
+sie nutzen. `framework_agreement_scope` hält das Sortiment mit Gültigkeitszeiträumen,
+`contracts.framework_agreement_id` die Zuordnung der Einzelverträge.
+
 Aufruf
 ------
     pip install faker pandas
     python generate_space_trading_data.py
     python generate_space_trading_data.py --seed 42 --output space_trading_game.db
+    python generate_space_trading_data.py --baseline ../bestand/space_trading_game_bestand.db
+
+Mit `--baseline` (Standard: `../bestand/space_trading_game_bestand.db` neben dem Skriptordner,
+falls vorhanden) vergleicht die Qualitätsprüfung bei Seed 42 die Bestandszeilen mit dem alten
+Datenstand.
 
 Abhängigkeiten: Python 3.11+, faker, pandas, Standardbibliothek (sqlite3).
 Alle Namen von Firmen, Personen und Orten sind fiktiv.
@@ -32,13 +56,15 @@ from __future__ import annotations
 
 import argparse
 import calendar
+import hashlib
 import math
 import random
 import sqlite3
 import sys
 import time
 from collections import defaultdict, deque
-from collections.abc import Callable, Hashable, Iterable, Sequence
+from collections.abc import Callable, Hashable, Iterable, Iterator, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -53,6 +79,8 @@ from faker import Faker
 
 DEFAULT_SEED = 42
 DEFAULT_OUTPUT = "space_trading_game.db"
+BASELINE_SEED = 42  # Seed des Bestandsdatenstands
+DEFAULT_BASELINE = Path(__file__).resolve().parent.parent / "bestand" / "space_trading_game_bestand.db"
 
 GAME_REFERENCE_DATE = date(2060, 1, 1)
 GAME_REFERENCE_DATETIME = datetime(2060, 1, 1, 0, 0, 0)
@@ -203,6 +231,18 @@ STAR_SYSTEMS: tuple[StarSystem, ...] = (
     StarSystem("nyx", "Nyx", (-432.0, -384.0, -262.0), 4, "lawless", "frontier",
                "Gesetzloses Wracksystem – Heimat von Bergern, Schmugglern und Piraten.",
                "A lawless graveyard of wrecks – home to salvagers, smugglers and pirates."),
+    # Erweiterung (hinten angehängt, damit die system_id der Bestandssysteme gleich bleiben)
+    StarSystem("pellora", "Pellora", (-58.0, -136.0, -92.0), 1, "high", "inner_ring",
+               "Gasriese mit automatischen Helium-3-Schöpfwerken – die Tankstelle des inneren Rings.",
+               "A gas giant whose automated helium-3 scoops make it the fuel depot of the inner ring."),
+    StarSystem("vaskar", "Vaskar", (-462.0, 438.0, 336.0), 5, "low", "far_reach",
+               "Gasriese mit Eismonden jenseits von Isolde – Tankstelle und Kühlkammer der Kolonisierung.",
+               "A gas giant ringed by ice moons beyond Isolde – fuel depot and cold store of colonisation."),
+    StarSystem("serravel", "Serravel", (412.0, -96.0, 388.0), 5, "medium", "far_reach",
+               "Junge Terraforming-Welt mit dünner Atmosphäre; Siedler, Vermesser und Konzerngarnisonen teilen "
+               "sich die ersten Kuppelstädte.",
+               "A young terraforming world with a thin atmosphere; settlers, surveyors and corporate garrisons "
+               "share the first domed towns."),
 )
 
 SECTOR_LABELS: dict[str, dict[str, str]] = {
@@ -211,6 +251,7 @@ SECTOR_LABELS: dict[str, dict[str, str]] = {
     "middle_belt": {"de_DE": "Mittelgürtel", "en_US": "Middle Belt"},
     "outer_rim": {"de_DE": "Äußerer Rand", "en_US": "Outer Rim"},
     "frontier": {"de_DE": "Grenzland", "en_US": "Frontier"},
+    "far_reach": {"de_DE": "Ferne Weiten", "en_US": "Far Reach"},
 }
 
 SECURITY_LABELS: dict[str, dict[str, str]] = {
@@ -266,7 +307,7 @@ STATION_TYPES: dict[str, StationTypeInfo] = {
 
 @dataclass(frozen=True)
 class CompanyProfile:
-    """Steckbrief einer der sechs Raumhandelsgesellschaften."""
+    """Steckbrief einer der 18 Raumhandelsgesellschaften (6 Bestandsfirmen, 12 Erweiterungsfirmen)."""
 
     key: str
     name: str
@@ -405,7 +446,241 @@ COMPANY_PROFILES: tuple[CompanyProfile, ...] = (
         fleet=("Meridian Star", "Golden Ledger", "Silk Comet", "Grand Exchange", "Long Haul", "Fair Wind",
                "Bright Margin", "Open Ledger", "Quiet Fortune", "Cross Current", "High Tide", "Trade Wind"),
     ),
+    # ----- Erweiterung Team A: Kernraum, Hochtechnologie und Infrastruktur -----
+    CompanyProfile(
+        key="graufalk", name="Graufalk Orbitalwerften AG", slug="graufalk-orbitalwerften",
+        language="de_DE", size_class="large", specialization="shipbuilding",
+        network_role="shipyard_supplier", sku_prefix="GFW", home_system="orrin",
+        territory={"orrin": 3.0, "sol": 1.5, "halcyon": 1.0, "aurelis": 1.0, "myrrhen": 0.5},
+        required_stations=(("industrial", "orrin"), ("trade_hub", "orrin"), ("industrial", "sol")),
+        station_type_weights={"industrial": 4.0, "military": 1.5, "mining": 1.0, "trade_hub": 1.0, "research": 0.5},
+        category_weights={"industrial_goods": 0.50, "technology": 0.20, "raw_materials": 0.10, "energy": 0.10,
+                          "luxury": 0.04, "food": 0.03, "medical": 0.03},
+        founded_range=(2035, 2038), credit_ratings=("A", "A+"), loyalty_bias=4,
+        description=(
+            "Die {name} wurde {year} von {founder} gegründet, als die Eisenkrone ihre Werftsparte im Orrin-System "
+            "abstieß. Aus den alten Trockendocks wurde der größte Werftverbund außerhalb Sols: KI-gesteuerte "
+            "Hellinge fertigen Rumpfplatten, Triebwerksteile, Reaktorkomponenten und Lebenserhaltungsmodule. "
+            "Graufalk baut die Schiffe, mit denen die Konzerne – und bald auch freie Händler – das All befahren, "
+            "und hat mit der Eisenkrone noch eine offene Rechnung."
+        ),
+        fleet=("Kielholer", "Spantenriese", "Stapellauf", "Werftfeuer", "Nietenhammer", "Dockmeister", "Ankerlicht",
+               "Helling", "Bugwelle", "Kranlicht", "Stahlkiel", "Graufalke"),
+    ),
+    CompanyProfile(
+        key="cindervale", name="Cindervale Cognitive Industries Inc.", slug="cindervale-cognitive",
+        language="en_US", size_class="large", specialization="ai_compute_and_robotics",
+        network_role="technology_core", sku_prefix="CCI", home_system="sol",
+        territory={"sol": 3.0, "halcyon": 2.0, "aurelis": 1.0, "orrin": 1.0, "tauvel": 0.5},
+        required_stations=(("research", "sol"), ("industrial", "halcyon")),
+        station_type_weights={"research": 3.0, "industrial": 3.0, "trade_hub": 1.0, "military": 0.5},
+        category_weights={"technology": 0.55, "industrial_goods": 0.15, "luxury": 0.12, "energy": 0.08,
+                          "raw_materials": 0.05, "medical": 0.05},
+        founded_range=(2031, 2034), credit_ratings=("AA-", "A+"), loyalty_bias=-3,
+        description=(
+            "{name} was founded in {year} by {founder}, only months after the first AI systems took over factory "
+            "floors on Earth. Its compute foundries in Sol and Halcyon produce AI cores, robotics units and sensor "
+            "arrays, and its control software runs half the automated plants of the inner ring – including, some "
+            "say, the ones that keep failing. Cindervale sells the minds of the machine age and is never shy about "
+            "the price."
+        ),
+        fleet=("Quiet Inference", "Gradient Descent", "Parallel Light", "Deep Cache", "Clean Compile", "Long Context",
+               "Bright Kernel", "Null Pointer", "Warm Start", "Edge Case", "Soft Landing", "Open Weights"),
+    ),
+    CompanyProfile(
+        key="kuppelwerk", name="Kuppelwerk Habitatbau AG", slug="kuppelwerk-habitatbau",
+        language="de_DE", size_class="medium", specialization="habitat_construction",
+        network_role="construction_supplier", sku_prefix="KHB", home_system="aurelis",
+        territory={"aurelis": 3.0, "myrrhen": 1.5, "tauvel": 1.5, "sol": 1.0},
+        required_stations=(("industrial", "aurelis"), ("mining", "myrrhen"), ("mining", "aurelis")),
+        station_type_weights={"industrial": 3.0, "mining": 2.0, "trade_hub": 1.0},
+        category_weights={"industrial_goods": 0.55, "raw_materials": 0.25, "energy": 0.05, "technology": 0.05,
+                          "luxury": 0.05, "food": 0.05},
+        founded_range=(2044, 2049), credit_ratings=("BBB", "BBB+"), loyalty_bias=6,
+        description=(
+            "Die {name} wurde {year} von {founder} im Aurelis-System gegründet, um Siedlungen schneller zu bauen, "
+            "als die KI-Planer sie entwerfen konnten. Aus Regolith, Silikaten und Glaskeramik sintert das "
+            "Unternehmen Bausteine, Kuppelsegmente und komplette Habitatmodule. Jeder Bauboom im inneren Ring füllt "
+            "die Auftragsbücher – jede ausbleibende Verbundstahl-Lieferung legt die Baustellen still."
+        ),
+        fleet=("Grundstein", "Richtfest", "Mörtelmond", "Kuppelbauer", "Lotwaage", "Ziegelwind", "Bauhütte"),
+    ),
+    CompanyProfile(
+        key="emberline", name="Emberline Fusion Fuels Inc.", slug="emberline-fusion",
+        language="en_US", size_class="medium", specialization="fusion_fuel_refining",
+        network_role="energy_supplier", sku_prefix="EFF", home_system="pellora",
+        territory={"pellora": 3.0, "sol": 1.5, "halcyon": 1.0, "tauvel": 0.5, "myrrhen": 0.5},
+        required_stations=(("mining", "pellora"), ("industrial", "sol")),
+        station_type_weights={"mining": 3.0, "industrial": 2.0, "trade_hub": 1.0},
+        category_weights={"energy": 0.45, "raw_materials": 0.20, "industrial_goods": 0.15, "technology": 0.10,
+                          "luxury": 0.05, "food": 0.05},
+        founded_range=(2041, 2046), credit_ratings=("BBB+", "A-"), loyalty_bias=0,
+        description=(
+            "{name} was founded in {year} by {founder}, who anchored the first automated helium-3 scoops in the "
+            "upper atmosphere of the gas giant Pellora. Today the company refines deuterium, helium-3 and fusion "
+            "fuel pellets for reactors across the inner ring. Its fuel keeps stations warm and freighters moving – "
+            "and every storm on Pellora is felt in the price of a canister on Sol."
+        ),
+        fleet=("Ember Run", "Plume Diver", "Steady Burn", "Deep Scoop", "Pilot Flame", "Torus Dream"),
+    ),
+    CompanyProfile(
+        key="kometenpost", name="Kometenpost Kurierdienste GmbH", slug="kometenpost-kurier",
+        language="de_DE", size_class="small", specialization="express_courier",
+        network_role="logistics_provider", sku_prefix="KPK", home_system="sol",
+        territory={"sol": 3.0, "halcyon": 1.5, "tauvel": 1.5, "aurelis": 1.0},
+        required_stations=(("trade_hub", "sol"),),
+        station_type_weights={"trade_hub": 3.0, "free_port": 1.0},
+        category_weights={"technology": 0.35, "medical": 0.30, "luxury": 0.25, "energy": 0.10},
+        founded_range=(2052, 2057), credit_ratings=("BB", "BB+"), loyalty_bias=10,
+        description=(
+            "Die {name} wurde {year} von {founder} gegründet, nachdem eine verspätete Medikamentenlieferung eine "
+            "ganze Station wochenlang in Quarantäne gehalten hatte. Der kleine Kurierdienst kauft eilige, wertvolle "
+            "Fracht – Ersatzteile, Medizin, Elektronik – und fliegt sie mit schnellen Leichtfrachtern zwischen Sol "
+            "und dem inneren Ring aus. Kometenpost weiß, wer wann was bestellt, und ihre Pilotinnen und Piloten "
+            "reden gern."
+        ),
+        fleet=("Eilfeder", "Postillion", "Sternschnuppe", "Laufbursche", "Blitzbrief"),
+    ),
+    CompanyProfile(
+        key="lanternfish", name="Lanternfish Leisure Co.", slug="lanternfish-leisure",
+        language="en_US", size_class="small", specialization="consumer_entertainment",
+        network_role="consumer_goods_supplier", sku_prefix="LFL", home_system="aurelis",
+        territory={"aurelis": 3.0, "sol": 1.5, "orrin": 1.0},
+        required_stations=(("industrial", "aurelis"), ("trade_hub", "sol")),
+        station_type_weights={"industrial": 2.0, "trade_hub": 2.0},
+        category_weights={"luxury": 0.60, "technology": 0.20, "food": 0.10, "industrial_goods": 0.10},
+        founded_range=(2050, 2055), credit_ratings=("BB-", "BB"), loyalty_bias=-5,
+        description=(
+            "{name} was founded in {year} by {founder}, a former station entertainment officer who noticed that "
+            "automated freighters never get bored – but their crews do. From a small fabrication works in Aurelis "
+            "the company builds immersion pods and entertainment electronics and imports little comforts like "
+            "coffee and spirits for crews in Sol and the Middle Belt. Small, loud and well liked on every docking "
+            "ring."
+        ),
+        fleet=("Matinee", "Encore", "Velvet Rope", "Bright Marquee", "Popcorn Comet"),
+    ),
+    # ----- Erweiterung Team B: Grenzraum, Expansion und Kolonisierung -----
+    CompanyProfile(
+        key="pionierwerk", name="Pionierwerk Kolonialausrüstung AG", slug="pionierwerk-kolonialausruestung",
+        language="de_DE", size_class="large", specialization="colony_outfitting",
+        network_role="colonization_backbone", sku_prefix="PKB", home_system="isolde",
+        territory={"isolde": 3.0, "serravel": 2.0, "myrrhen": 1.5, "vaskar": 1.0},
+        required_stations=(("industrial", "isolde"), ("trade_hub", "isolde"),
+                           ("industrial", "myrrhen"), ("agricultural", "serravel")),
+        station_type_weights={"industrial": 3.0, "agricultural": 2.0, "trade_hub": 1.5, "research": 1.0,
+                              "mining": 1.0},
+        category_weights={"industrial_goods": 0.36, "food": 0.14, "technology": 0.12, "raw_materials": 0.12,
+                          "luxury": 0.10, "energy": 0.08, "medical": 0.08},
+        founded_range=(2035, 2039), credit_ratings=("A-", "A"), loyalty_bias=4,
+        description=(
+            "Die {name} wurde {year} von {founder} gegründet, um die Habitatmonde des Isolde-Systems bewohnbar zu "
+            "machen. KI-gesteuerte Werke fertigen dort Lebenserhaltung, Atmosphärenwandler, Bauteile und "
+            "Terraforming-Kulturen aus Recyclingmetall und Mondregolith, eigene Gartenringe versorgen die "
+            "Bautrupps. Heute rüstet der Konzern jede neue Kolonie vom ersten Schweißpunkt bis zur ersten Ernte "
+            "aus – und hält die alten Pachtansprüche anderer Konzerne auf Isolde für Makulatur."
+        ),
+        fleet=("Grundstein", "Richtfest", "Wegbereiter", "Fundament", "Kuppelbau", "Spatenstich", "Lotlinie",
+               "Bauhütte", "Hebebaum", "Werkbank", "Schlussstein", "Firstwind"),
+    ),
+    CompanyProfile(
+        key="ravenmoor", name="Ravenmoor Convoy & Security Group", slug="ravenmoor-convoy",
+        language="en_US", size_class="large", specialization="convoy_security_and_supply",
+        network_role="frontier_quartermaster", sku_prefix="RCS", home_system="kharon",
+        territory={"kharon": 3.0, "brennus": 2.0, "vaskar": 1.5, "serravel": 1.0, "nyx": 1.0, "aurelis": 0.5},
+        required_stations=(("military", "kharon"), ("trade_hub", "kharon"),
+                           ("military", "brennus"), ("free_port", "vaskar")),
+        station_type_weights={"military": 3.0, "trade_hub": 1.5, "free_port": 1.0, "industrial": 1.0,
+                              "research": 0.5},
+        category_weights={"industrial_goods": 0.26, "technology": 0.24, "energy": 0.16, "medical": 0.12,
+                          "food": 0.12, "contraband": 0.06, "raw_materials": 0.04},
+        founded_range=(2036, 2040), credit_ratings=("BBB+", "A-"), loyalty_bias=10,
+        description=(
+            "{name} was founded in {year} by {founder} to escort the first AI-piloted ore convoys through the "
+            "Brennus belt. Today its bastions in Kharon and Brennus guard the frontier corridors, and its "
+            "quartermasters supply garrisons, mining crews and settlers with fuel, sensors, field medicine and "
+            "spare parts. Ravenmoor sells safety by the light-hour – and whatever its patrols seize from smugglers "
+            "has a way of reappearing on the free market."
+        ),
+        fleet=("Iron Vigil", "Long Watch", "Steady Hand", "Night Warden", "Rearguard", "Flint Shield",
+               "Lantern Bearer", "Hold Fast", "Grey Sentry", "Far Escort", "Last Line", "Quiet Guardian"),
+    ),
+    CompanyProfile(
+        key="raureif", name="Raureif Volatilförderung GmbH", slug="raureif-volatilfoerderung",
+        language="de_DE", size_class="medium", specialization="ice_and_gas_extraction",
+        network_role="volatiles_supplier", sku_prefix="RVF", home_system="vaskar",
+        territory={"vaskar": 3.0, "myrrhen": 1.5, "isolde": 1.0, "brennus": 0.5},
+        required_stations=(("mining", "vaskar"), ("industrial", "vaskar"), ("mining", "myrrhen")),
+        station_type_weights={"mining": 3.0, "industrial": 1.0, "trade_hub": 1.0},
+        category_weights={"raw_materials": 0.45, "energy": 0.40, "industrial_goods": 0.10, "technology": 0.05},
+        founded_range=(2045, 2049), credit_ratings=("BBB", "BBB+"), loyalty_bias=2,
+        description=(
+            "Die {name} wurde {year} von {founder} gegründet, als die ersten autonomen Gassammler in die "
+            "Atmosphäre des Gasriesen Vaskar eintauchten. Das Unternehmen fördert Wasser-, Ammoniak- und "
+            "Stickstoffeis auf den Vaskar-Monden und im Myrrhen-System und verarbeitet Helium-3 und Deuterium zu "
+            "Treibstoff. Ohne Raureif gibt es in den neuen Kolonien weder Atemluft noch Wasser noch Brennstoff – "
+            "entsprechend selbstbewusst verhandelt die Geschäftsführung."
+        ),
+        fleet=("Eisblume", "Frostfeder", "Kältebrücke", "Gasriese", "Polarnacht", "Reifglanz", "Schneegans"),
+    ),
+    CompanyProfile(
+        key="outmark", name="Outmark Survey & Prospecting Inc.", slug="outmark-survey",
+        language="en_US", size_class="medium", specialization="survey_and_prospecting",
+        network_role="exploration_pioneer", sku_prefix="OSP", home_system="serravel",
+        territory={"serravel": 3.0, "brennus": 1.5, "vaskar": 1.0, "isolde": 0.5},
+        required_stations=(("research", "serravel"), ("mining", "serravel")),
+        station_type_weights={"research": 2.5, "mining": 2.0, "trade_hub": 1.0},
+        category_weights={"technology": 0.38, "raw_materials": 0.30, "luxury": 0.12, "medical": 0.10,
+                          "industrial_goods": 0.10},
+        founded_range=(2043, 2048), credit_ratings=("BB+", "BBB-"), loyalty_bias=-5,
+        description=(
+            "Founded in {year} by {founder}, {name} sends autonomous survey probes ahead of every corporate "
+            "expansion. From its institute on Serravel it sells star charts, sensor arrays and prospecting drones, "
+            "and it hauls the first samples – rare earths, quantum quartz, gemstones – back from worlds nobody has "
+            "named yet. Outmark's data decides where the next colony is built, which makes its analysts popular, "
+            "well paid and occasionally indiscreet."
+        ),
+        fleet=("Far Sounding", "Plumb Line", "Bearing Zero", "Parallax", "Long Baseline", "Blank Map"),
+    ),
+    CompanyProfile(
+        key="morgengrund", name="Siedlergenossenschaft Morgengrund eG", slug="morgengrund-siedler",
+        language="de_DE", size_class="small", specialization="settler_cooperative",
+        network_role="colony_provisioner", sku_prefix="SGM", home_system="isolde",
+        territory={"isolde": 3.0, "serravel": 1.5, "vaskar": 1.0},
+        required_stations=(("agricultural", "isolde"), ("trade_hub", "isolde")),
+        station_type_weights={"agricultural": 3.0, "trade_hub": 1.5},
+        category_weights={"food": 0.55, "luxury": 0.15, "raw_materials": 0.10, "industrial_goods": 0.10,
+                          "medical": 0.10},
+        founded_range=(2053, 2057), credit_ratings=("B+", "BB-"), loyalty_bias=12,
+        description=(
+            "Die {name} wurde {year} von {founder} und einer Handvoll Siedlerfamilien auf einem Habitatmond im "
+            "Isolde-System gegründet. Die Genossenschaft betreibt Gewächskuppeln, eine Saatgutbank und einen "
+            "kleinen Markt, auf dem Kolonisten Lebensmittel, Werkzeug und Selbstgebranntes tauschen. Jedes Mitglied "
+            "hat eine Stimme, jeder Händler einen Platz am Tisch – solange er fair bezahlt."
+        ),
+        fleet=("Hoffnung", "Feldmaus", "Gemeinsinn", "Erntedank", "Taubenschlag"),
+    ),
+    CompanyProfile(
+        key="second_hull", name="Second Hull Reclamation Co.", slug="second-hull-reclamation",
+        language="en_US", size_class="small", specialization="scrap_recycling",
+        network_role="secondary_raw_supplier", sku_prefix="SHR", home_system="nyx",
+        territory={"nyx": 3.0, "brennus": 1.0, "kharon": 0.5},
+        required_stations=(("industrial", "nyx"),),
+        station_type_weights={"industrial": 2.0, "mining": 2.0, "trade_hub": 0.5},
+        category_weights={"raw_materials": 0.40, "industrial_goods": 0.35, "technology": 0.20, "luxury": 0.05},
+        founded_range=(2052, 2056), credit_ratings=("B", "B+"), loyalty_bias=-6,
+        description=(
+            "{name} was founded in {year} by {founder}, who decided that the wrecks of Nyx were worth more melted "
+            "down than stripped in the dark. The licensed recycler runs a smelter in the middle of the lawless "
+            "graveyard, pays its protection money on time and turns derelict hulls into certified metals, "
+            "refurbished components and salvaged electronics. The smugglers call it a traitor to the trade; the "
+            "colonies call it their cheapest supplier."
+        ),
+        fleet=("Patchwork", "Mended Wing", "Scrap Sparrow", "Hand-Me-Down", "Make Do"),
+    ),
 )
+# Bestandsfirmen: erzeugen ihre Daten mit dem gemeinsamen Zufallsstrom (Bestandsschutz)
+LEGACY_COMPANY_KEYS: frozenset[str] = frozenset(
+    {"feldspat", "driftwood", "lichtacker", "corvane", "eisenkrone", "helix"})
 
 # Gerichtete Vereinbarungen (Verkäufer -> Käufer). Unvollständiges Netz mit Helix als Hub.
 PARTNERSHIP_BLUEPRINT: tuple[tuple[str, str, str], ...] = (
@@ -422,12 +697,67 @@ PARTNERSHIP_BLUEPRINT: tuple[tuple[str, str, str], ...] = (
     ("corvane", "eisenkrone", "supply_agreement"),
     ("eisenkrone", "corvane", "joint_venture"),
     ("lichtacker", "corvane", "supply_agreement"),
+    # Erweiterung: neue Firma -> Bestandsfirma (nie umgekehrt, Bestandsschutz)
+    ("graufalk", "helix", "supply_agreement"),
+    ("cindervale", "eisenkrone", "supply_agreement"),
+    ("kuppelwerk", "lichtacker", "supply_agreement"),
+    ("emberline", "corvane", "supply_agreement"),
+    ("emberline", "lichtacker", "supply_agreement"),
+    ("raureif", "eisenkrone", "supply_agreement"),
+    ("ravenmoor", "helix", "logistics_partnership"),
+    # Erweiterung: innerhalb Team A
+    ("cindervale", "graufalk", "supply_agreement"),
+    ("graufalk", "cindervale", "strategic_alliance"),
+    ("emberline", "graufalk", "supply_agreement"),
+    ("graufalk", "emberline", "supply_agreement"),
+    ("kuppelwerk", "graufalk", "supply_agreement"),
+    ("emberline", "kuppelwerk", "supply_agreement"),
+    ("emberline", "cindervale", "supply_agreement"),
+    ("cindervale", "kometenpost", "consignment"),
+    ("kometenpost", "cindervale", "logistics_partnership"),
+    ("cindervale", "lanternfish", "supply_agreement"),
+    ("lanternfish", "graufalk", "supply_agreement"),
+    ("lanternfish", "kometenpost", "consignment"),
+    # Erweiterung: innerhalb Team B
+    ("raureif", "pionierwerk", "supply_agreement"),
+    ("pionierwerk", "morgengrund", "supply_agreement"),
+    ("morgengrund", "pionierwerk", "supply_agreement"),
+    ("ravenmoor", "pionierwerk", "logistics_partnership"),
+    ("pionierwerk", "ravenmoor", "supply_agreement"),
+    ("outmark", "pionierwerk", "licensing"),
+    ("second_hull", "pionierwerk", "supply_agreement"),
+    ("second_hull", "ravenmoor", "consignment"),
+    ("raureif", "ravenmoor", "supply_agreement"),
+    ("ravenmoor", "outmark", "logistics_partnership"),
+    ("morgengrund", "ravenmoor", "supply_agreement"),
+    ("outmark", "raureif", "supply_agreement"),
+    # Erweiterung: teamübergreifend
+    ("kuppelwerk", "pionierwerk", "supply_agreement"),
+    ("second_hull", "graufalk", "supply_agreement"),
+    ("graufalk", "ravenmoor", "supply_agreement"),
 )
 OPTIONAL_PARTNERSHIPS: tuple[tuple[str, str, str, float], ...] = (
     ("helix", "corvane", "logistics_partnership", 0.6),
 )
-# Beendete Beziehung (vor dem Datenzeitraum) – Grundlage für Rivalität und Spionage
-HISTORIC_PARTNERSHIPS: tuple[tuple[str, str, str], ...] = (("corvane", "driftwood", "supply_agreement"),)
+# Beendete Beziehungen (vor dem Datenzeitraum) – Grundlage für Rivalität und Spionage
+HISTORIC_PARTNERSHIPS: tuple[tuple[str, str, str], ...] = (
+    ("corvane", "driftwood", "supply_agreement"),
+    ("eisenkrone", "graufalk", "supply_agreement"),
+    ("cindervale", "helix", "licensing"),
+    ("lichtacker", "pionierwerk", "supply_agreement"),
+    ("emberline", "eisenkrone", "supply_agreement"),
+    ("outmark", "feldspat", "licensing"),
+    ("driftwood", "second_hull", "consignment"),
+)
+# Feste Laufzeiten der historischen Erweiterungs-Partnerschaften (Bestand: zufällig wie bisher)
+HISTORIC_PARTNERSHIP_DATES: dict[tuple[str, str], tuple[str, str]] = {
+    ("eisenkrone", "graufalk"): ("2039-01-01", "2049-06-30"),  # Ausgliederung der Werftsparte Orrin
+    ("cindervale", "helix"): ("2041-04-01", "2054-03-31"),  # Lizenzverlust, Technik seither über Kharon
+    ("lichtacker", "pionierwerk"): ("2045-03-01", "2053-06-30"),  # Versorgung Isolde bis zum Pachtstreit
+    ("emberline", "eisenkrone"): ("2047-02-01", "2056-06-30"),  # Helium-3 für Hande bis zur Eigenförderung
+    ("outmark", "feldspat"): ("2055-02-01", "2058-06-30"),  # Vermessungsdaten Brennus, später Fund 52
+    ("driftwood", "second_hull"): ("2057-05-01", "2058-07-01"),  # Bergegut Nyx, Bruch nach Razzia 26
+}
 
 TRUST_RANGES: dict[str, tuple[int, int]] = {
     "strategic_alliance": (70, 92), "joint_venture": (65, 90), "supply_agreement": (50, 85),
@@ -440,7 +770,41 @@ RIVALRY_BLUEPRINT: tuple[tuple[str, str, str, str], ...] = (
     ("driftwood", "corvane", "industrial_espionage", "halcyon"),
     ("feldspat", "driftwood", "territorial_claims", "kharon"),
     ("lichtacker", "eisenkrone", "resource_competition", "myrrhen"),
+    # Erweiterung (an Ereignissen und Verträgen des Bestands festgemacht)
+    ("graufalk", "eisenkrone", "market_dominance", "halcyon"),  # KI-Ausfälle Förster (19/36/70)
+    ("cindervale", "helix", "market_dominance", "sol"),  # Nachfrageschübe Sol Exchange II (3/24)
+    ("emberline", "eisenkrone", "resource_competition", "myrrhen"),  # Energiebrüche Agrarstation Seip
+    ("lichtacker", "pionierwerk", "territorial_claims", "isolde"),  # Pachtstreit Isolde
+    ("ravenmoor", "driftwood", "armed_conflict", "nyx"),  # Söldner-Razzien 26/58
+    ("outmark", "feldspat", "territorial_claims", "brennus"),  # Rohstofffund 52 bei Becker
+    ("ravenmoor", "helix", "market_dominance", "kharon"),  # Kharon-Korridor (16/26)
+    ("second_hull", "driftwood", "territorial_claims", "nyx"),  # Wracks von Nyx (54)
 )
+# Feste Kennzahlen der Erweiterungs-Rivalitäten: (since_date, intensity, espionage_risk)
+RIVALRY_DETAILS: dict[tuple[str, str], tuple[str, int, int]] = {
+    ("graufalk", "eisenkrone"): ("2049-07-01", 70, 55),
+    ("cindervale", "helix"): ("2054-04-01", 65, 50),
+    ("emberline", "eisenkrone"): ("2058-08-15", 55, 40),
+    ("lichtacker", "pionierwerk"): ("2053-07-01", 60, 55),
+    ("ravenmoor", "driftwood"): ("2058-06-30", 85, 70),
+    ("outmark", "feldspat"): ("2059-07-14", 65, 80),
+    ("ravenmoor", "helix"): ("2057-11-17", 55, 45),
+    ("second_hull", "driftwood"): ("2058-07-01", 50, 40),
+}
+RIVALRY_TEXT_OVERRIDES: dict[tuple[str, str], dict[str, str]] = {
+    ("emberline", "eisenkrone"): {
+        "de_DE": "{company} und {rival} liefern beide Energie ins {system}-System und unterbieten sich bei jedem "
+                 "Liefervertrag.",
+        "en_US": "{company} and {rival} both supply energy to the {system} system and undercut each other on every "
+                 "supply contract.",
+    },
+    ("lichtacker", "pionierwerk"): {
+        "de_DE": "Streit um Pachtrechte im {system}-System: {company} hält {rival} vor, alte Pachtverträge für "
+                 "Makulatur erklärt zu haben.",
+        "en_US": "A dispute over lease rights in the {system} system: {company} accuses {rival} of tearing up old "
+                 "lease contracts.",
+    },
+}
 RIVALRY_TEXTS: dict[str, dict[str, str]] = {
     "market_dominance": {
         "de_DE": "Kampf um die Vorherrschaft im {system}-System: {company} und {rival} sind aufeinander "
@@ -462,6 +826,16 @@ RIVALRY_TEXTS: dict[str, dict[str, str]] = {
         "de_DE": "{company} und {rival} konkurrieren um die Wassereis-Vorkommen im {system}-System.",
         "en_US": "{company} and {rival} compete for the water-ice deposits in the {system} system.",
     },
+    "armed_conflict": {
+        "de_DE": "Söldner von {company} jagen Schmuggler im {system}-System; {rival} macht sie für die Razzien auf "
+                 "seine Häfen verantwortlich.",
+        "en_US": "{company}'s mercenaries hunt smugglers in the {system} system; {rival} blames them for the raids "
+                 "on its havens.",
+    },
+}
+RIVALRY_INTENSITY_RANGES: dict[str, tuple[int, int]] = {
+    "market_dominance": (55, 80), "industrial_espionage": (70, 95), "territorial_claims": (40, 75),
+    "resource_competition": (35, 65), "armed_conflict": (60, 90),
 }
 
 CATEGORY_LABELS: dict[str, tuple[str, str]] = {
@@ -580,18 +954,19 @@ class ProductArchetype:
     legal_status: str
     producers: frozenset[str]
     consumers: frozenset[str]
+    extension: bool = False  # True: nur im Produkt-Pool der Erweiterungsfirmen (Bestandsschutz)
 
 
 def _archetype(code: str, category: str, name_de: str, name_en: str, unit: str, base_price: float,
                volume_m3: float, mass_kg: float, legal_status: str = "legal",
                producers: Iterable[str] | None = None,
-               extra_consumers: Iterable[str] = ()) -> ProductArchetype:
+               extra_consumers: Iterable[str] = (), extension: bool = False) -> ProductArchetype:
     """Erzeugt einen Waren-Archetyp mit kategorieabhängigen Erzeuger- und Verbraucherstationen."""
     return ProductArchetype(
         code=code, category=category, name_de=name_de, name_en=name_en, unit=unit, base_price=base_price,
         volume_m3=volume_m3, mass_kg=mass_kg, legal_status=legal_status,
         producers=frozenset(producers) if producers else CATEGORY_PRODUCERS[category],
-        consumers=CATEGORY_CONSUMERS[category] | frozenset(extra_consumers),
+        consumers=CATEGORY_CONSUMERS[category] | frozenset(extra_consumers), extension=extension,
     )
 
 
@@ -689,6 +1064,26 @@ PRODUCT_ARCHETYPES: tuple[ProductArchetype, ...] = (
                9000, 0.001, 0.1, "illegal"),
     _archetype("hacked_ai_cores", "contraband", "Gehackte KI-Kerne", "Hacked AI Cores", "unit", 52000, 0.1, 18,
                "illegal"),
+    # Erweiterung (nur in den Pools der neuen Firmen, damit die Bestandskataloge gleich bleiben)
+    _archetype("fusion_pellets", "energy", "Fusionspellets", "Fusion Fuel Pellets", "crate", 5200, 0.06, 22,
+               producers=("industrial",), extension=True),
+    _archetype("habitat_modules", "industrial_goods", "Habitatmodule", "Habitat Modules", "unit", 46000, 14.0, 6200,
+               extra_consumers=("industrial",), extension=True),
+    _archetype("sinter_blocks", "industrial_goods", "Sinterbausteine", "Sintered Regolith Blocks", "pallet", 380,
+               0.9, 1400, extra_consumers=("industrial",), extension=True),
+    _archetype("quantum_relays", "technology", "Quantenrelais", "Quantum Comm Relays", "unit", 19500, 0.25, 28,
+               "restricted", extension=True),
+    _archetype("immersion_pods", "luxury", "Immersionskapseln", "Immersion Pods", "unit", 13500, 2.4, 260,
+               producers=("industrial",), extension=True),
+    _archetype("escort_drones", "industrial_goods", "Geleitschutzdrohnen", "Escort Drones", "unit", 21000, 2.4, 650,
+               "restricted", producers=("industrial", "military"), extension=True),
+    _archetype("nitrogen_ice", "raw_materials", "Stickstoffeis", "Nitrogen Ice", "t", 75, 1.2, 1000,
+               extra_consumers=("agricultural", "research"), extension=True),
+    _archetype("terraforming_cultures", "technology", "Terraforming-Kulturen", "Terraforming Cultures", "canister",
+               7800, 0.06, 9, "restricted", producers=("research", "agricultural"),
+               extra_consumers=("agricultural",), extension=True),
+    _archetype("survey_charts", "technology", "Vermessungsdatenkerne", "Survey Data Cores", "unit", 5400, 0.01, 0.5,
+               producers=("research",), extension=True),
 )
 ARCHETYPES_BY_CODE: dict[str, ProductArchetype] = {a.code: a for a in PRODUCT_ARCHETYPES}
 
@@ -725,6 +1120,649 @@ ORDER_NOTES: dict[str, tuple[str, ...]] = {
 }
 CALLOFF_NOTE = {"de_DE": "Abruf {index}/{total} aus Vertrag {number}.",
                 "en_US": "Call-off {index}/{total} under contract {number}."}
+
+# ---------------------------------------------------------------------------
+# Rahmenverträge (Grundlage: planung/verknuepfungen.json, Entscheidung Phase 2)
+# ---------------------------------------------------------------------------
+
+# Einzelvertragstypen, die als Abruf unter einem Rahmenvertrag laufen
+FRAMEWORK_CALLOFF_TYPES: frozenset[str] = frozenset({"framework", "recurring_supply", "exclusive_supply"})
+# Vor Rahmenbeginn (bzw. außerhalb des Rahmens) schließen neue Paare nur diese Vertragstypen
+OUTSIDE_FRAMEWORK_CONTRACT_TYPES: frozenset[str] = frozenset({"spot", "emergency_supply", "consignment"})
+FRAMEWORK_VOLUME_THRESHOLD = 0.90  # kumulierte Abrufe über 90 % des Rahmenvolumens -> Volumen-Nachtrag
+FRAMEWORK_EXTENSION_LEAD_DAYS = 60  # Verlängerung wirksam 60 Tage vor Laufzeitende
+FRAMEWORK_SIGNING_LEAD_DAYS = 30  # Unterzeichnung 30 Tage vor Rahmenbeginn
+DEFAULT_RENEWAL_MONTHS = 12
+DEFAULT_PENALTY_RATE_PCT = 0.6  # Vertragsstrafe in % des Abrufwerts je Verzugstag
+DEFAULT_PROPOSAL_DATE_2060 = date(2059, 12, 10)  # Nachträge mit Wirkung 2060 werden im Dezember 2059 angeboten
+
+AMENDMENT_RULES = ("first_contract_of_category", "cumulative_over_90pct", "calloff_after_end")
+AMENDMENT_PREFIX = {"de_DE": "N", "en_US": "A"}
+
+PRICE_FORMULA_TEXTS: dict[str, tuple[str, str]] = {
+    "fixed": ("Festpreise laut Preisanhang", "fixed prices per price schedule"),
+    "index_linked": ("indexierte Preise ({index}), Anpassung höchstens {cap} % je Quartal",
+                     "index-linked prices ({index}), adjusted by at most {cap}% per quarter"),
+    "cost_plus": ("Herstellkosten zuzüglich {pct} % Aufschlag", "production cost plus a {pct}% mark-up"),
+    "market_minus": ("Marktpreis abzüglich {pct} % Rahmenrabatt", "market price less a {pct}% framework discount"),
+}
+INDEXATION_LABELS: dict[str, tuple[str, str]] = {
+    "none": ("ohne Index", "no index"),
+    "category_price_index": ("Preisindex {category}", "{category} price index"),
+    "fuel_index": ("Treibstoffindex", "fuel index"),
+    "risk_index": ("Risikoindex der Korridore", "corridor risk index"),
+}
+EXCLUSIVITY_LABELS: dict[str, tuple[str, str]] = {
+    "none": ("keine Exklusivität", "no exclusivity"),
+    "right_of_first_refusal": ("Vorkaufsrecht des Käufers", "buyer's right of first refusal"),
+    "buyer_exclusive": ("Käuferexklusivität", "buyer exclusivity"),
+    "seller_exclusive": ("Verkäuferexklusivität", "seller exclusivity"),
+    "mutual": ("gegenseitige Exklusivität", "mutual exclusivity"),
+    "regional_exclusive": ("regionale Exklusivität", "regional exclusivity"),
+}
+AMENDMENT_TEXTS: dict[str, tuple[str, str]] = {
+    "volume_increase": ("Das Rahmenvolumen wird ab {effective} von {before} auf {after} CR erhöht.{trigger}",
+                        "The framework volume is raised from {before} to {after} CR as of {effective}.{trigger}"),
+    "volume_reduction": ("Das Rahmenvolumen wird ab {effective} von {before} auf {after} CR gesenkt.{trigger}",
+                         "The framework volume is reduced from {before} to {after} CR as of {effective}.{trigger}"),
+    "product_addition": ("Ab {effective} wird das Sortiment des Rahmens um {items} erweitert.{trigger}",
+                         "As of {effective}, the framework scope is extended by {items}.{trigger}"),
+    "product_removal": ("Ab {effective} wird das Sortiment des Rahmens um {items} verringert.{trigger}",
+                        "As of {effective}, the framework scope no longer includes {items}.{trigger}"),
+    "price_adjustment": ("Die Rahmenpreise ändern sich ab {effective} um {pct} %{items_suffix}.{trigger}",
+                         "Framework prices change by {pct}% as of {effective}{items_suffix}.{trigger}"),
+    "term_extension": ("Die Laufzeit wird bis {end} verlängert (wirksam ab {effective}).{trigger}",
+                       "The term is extended until {end} (effective {effective}).{trigger}"),
+    "exclusivity_clause": ("Ab {effective} gilt {exclusivity} für {items}{system_suffix}.{trigger}",
+                           "As of {effective}, {exclusivity} applies to {items}{system_suffix}.{trigger}"),
+    "exclusivity_waiver": ("Ab {effective} entfällt die Exklusivität für {items}.{trigger}",
+                           "As of {effective}, exclusivity for {items} is waived.{trigger}"),
+    "penalty_clause": ("Ab {effective} gilt eine verschärfte Vertragsstrafenklausel für verspätete Abrufe.{trigger}",
+                       "As of {effective}, a stricter penalty clause applies to late call-offs.{trigger}"),
+    "service_level_clause": ("Ab {effective} gelten zugesicherte Lieferzeiten und Gewährleistungsfristen.{trigger}",
+                             "As of {effective}, guaranteed delivery times and warranty periods apply.{trigger}"),
+    "escort_clause": ("Ab {effective} werden Konvois im Korridor durch {escort} begleitet.{trigger}",
+                      "As of {effective}, convoys in the corridor are escorted by {escort}.{trigger}"),
+    "force_majeure_clause": ("Ab {effective} gilt eine erweiterte Klausel zu höherer Gewalt.{trigger}",
+                             "As of {effective}, an extended force majeure clause applies.{trigger}"),
+    "competition_clause": ("Ab {effective} gilt ein Wettbewerbsverbot für {items}.{trigger}",
+                           "As of {effective}, a non-compete clause covers {items}.{trigger}"),
+    "confidentiality_clause": ("Ab {effective} gilt eine verschärfte Vertraulichkeitsklausel.{trigger}",
+                               "As of {effective}, a stricter confidentiality clause applies.{trigger}"),
+    "scope_extension": ("Ab {effective} erstreckt sich der Rahmen auf {items}{system_suffix}.{trigger}",
+                        "As of {effective}, the framework extends to {items}{system_suffix}.{trigger}"),
+    "partial_termination": ("Teilkündigung: Ab {effective} umfasst der Rahmen keine {items} mehr.{trigger}",
+                            "Partial termination: as of {effective}, the framework no longer covers {items}.{trigger}"),
+    "suspension": ("Der Rahmen ruht ab {effective}; neue Abrufe sind ausgesetzt.{trigger}",
+                   "The framework is suspended as of {effective}; no new call-offs are accepted.{trigger}"),
+}
+AMENDMENT_RULE_NOTES: dict[str, tuple[str, str]] = {
+    "first_contract_of_category": (" Anlass: erster Abrufvertrag {contract}.",
+                                   " Reason: first call-off contract {contract}."),
+    "cumulative_over_90pct": (" Anlass: Vertrag {contract} bringt die Abrufe über 90 % des Rahmenvolumens.",
+                              " Reason: contract {contract} takes call-offs above 90% of the framework volume."),
+    "calloff_after_end": (" Anlass: Abruf {contract} beginnt nach dem bisherigen Laufzeitende.",
+                          " Reason: call-off {contract} starts after the previous end of term."),
+    "anchor": (" Bezug: {contract}.", " Reference: {contract}."),
+}
+
+FRAMEWORK_BLUEPRINT: tuple[dict[str, Any], ...] = (
+    {
+        "number": "HMX-MSA-2057-01", "seller": "helix", "buyer": "lichtacker",
+        "title": "Distribution Framework Agreement Agricultural Rings Tauvel, Aurelis & Myrrhen",
+        "start": "2057-01-01", "term_months": 36, "base_volume_mcr": 250, "price_formula": "index_linked",
+        "indexation": "category_price_index", "adjustment_cap_pct": 8, "exclusivity": "right_of_first_refusal",
+        "exclusive_categories": ("industrial_goods",), "notice_days": 180,
+        "scope": ("luxury", "food", "industrial_goods"),
+        "amendments": (
+            {
+                "type": "product_addition", "effective": "2057-04-01", "status": "signed",
+                "categories": ("energy", "technology"), "rule": "first_contract_of_category",
+            },
+            {
+                "type": "product_addition", "effective": "2057-09-01", "status": "signed", "categories": ("medical",),
+                "rule": "first_contract_of_category",
+            },
+            {
+                "type": "penalty_clause", "effective": "2058-03-14", "status": "signed", "proposed": "2058-02-20",
+                "initiated_by": "lichtacker", "contracts": ("HMX-CTR-2057-0043",),
+            },
+            {
+                "type": "volume_increase", "effective": "2058-09-01", "status": "signed", "volume_after_mcr": 400,
+                "rule": "cumulative_over_90pct", "contracts": ("HMX-CTR-2058-0161",),
+            },
+            {
+                "type": "exclusivity_waiver", "effective": "2059-03-15", "status": "signed", "proposed": "2059-03-10",
+                "initiated_by": "lichtacker", "categories": ("industrial_goods",),
+                "contracts": ("HMX-CTR-2057-0043", "HMX-CTR-2058-0139", "HMX-CTR-2058-0159"),
+            },
+            {
+                "type": "volume_increase", "effective": "2059-10-01", "status": "signed", "volume_after_mcr": 550,
+                "rule": "cumulative_over_90pct", "contracts": ("HMX-CTR-2059-0259",),
+            },
+            {
+                "type": "term_extension", "effective": "2059-11-01", "status": "signed", "initiated_by": "lichtacker",
+                "new_end_date": "2060-12-31", "rule": "calloff_after_end",
+            },
+        ),
+    },
+    {
+        "number": "HMX-MSA-2057-02", "seller": "helix", "buyer": "corvane",
+        "title": "Logistics & Supply Master Agreement Halcyon/Aurelis", "start": "2057-01-01", "term_months": 36,
+        "base_volume_mcr": 300, "price_formula": "market_minus", "indexation": "category_price_index",
+        "base_discount_pct": 4, "exclusivity": "none", "notice_days": 120, "scope": ("luxury", "raw_materials"),
+        "amendments": (
+            {
+                "type": "product_addition", "effective": "2057-03-01", "status": "signed",
+                "categories": ("technology",), "rule": "first_contract_of_category",
+            },
+            {
+                "type": "product_addition", "effective": "2057-05-01", "status": "signed", "categories": ("energy",),
+                "rule": "first_contract_of_category",
+            },
+            {
+                "type": "exclusivity_clause", "effective": "2057-05-01", "status": "signed", "initiated_by": "helix",
+                "categories": ("energy",), "exclusivity": "buyer_exclusive",
+            },
+            {
+                "type": "product_addition", "effective": "2058-01-01", "status": "signed",
+                "categories": ("industrial_goods",), "rule": "first_contract_of_category",
+            },
+            {
+                "type": "volume_increase", "effective": "2058-08-01", "status": "signed", "volume_after_mcr": 450,
+                "rule": "cumulative_over_90pct", "contracts": ("HMX-CTR-2058-0152",),
+            },
+            {
+                "type": "product_removal", "effective": "2059-03-15", "status": "signed", "proposed": "2059-03-13",
+                "initiated_by": "corvane", "archetypes": ("helium3",),
+                "contracts": ("HMX-CTR-2058-0131", "HMX-CTR-2057-0014"), "events": (30,),
+            },
+            {
+                "type": "exclusivity_waiver", "effective": "2059-03-15", "status": "signed", "proposed": "2059-03-13",
+                "initiated_by": "corvane", "categories": ("energy",), "contracts": ("HMX-CTR-2058-0131",),
+            },
+            {
+                "type": "volume_increase", "effective": "2059-04-01", "status": "signed", "volume_after_mcr": 600,
+                "rule": "cumulative_over_90pct", "contracts": ("HMX-CTR-2059-0213",),
+            },
+            {
+                "type": "term_extension", "effective": "2059-11-01", "status": "signed", "initiated_by": "corvane",
+                "new_end_date": "2060-12-31", "rule": "calloff_after_end",
+            },
+            {
+                "type": "volume_increase", "effective": "2060-02-01", "status": "proposed", "proposed": "2059-12-15",
+                "volume_after_mcr": 750, "rule": "cumulative_over_90pct", "contracts": ("HMX-CTR-2060-0281",),
+            },
+        ),
+    },
+    {
+        "number": "HMX-MSA-2057-03", "seller": "helix", "buyer": "eisenkrone",
+        "title": "Strategic Supply Framework Sol/Halcyon/Brennus", "start": "2057-01-01", "term_months": 48,
+        "base_volume_mcr": 300, "price_formula": "cost_plus", "indexation": "category_price_index",
+        "cost_plus_pct": 9, "exclusivity": "none", "notice_days": 360, "scope": ("food", "raw_materials", "energy"),
+        "amendments": (
+            {
+                "type": "product_addition", "effective": "2057-07-01", "status": "signed", "categories": ("medical",),
+                "rule": "first_contract_of_category",
+            },
+            {
+                "type": "product_addition", "effective": "2057-09-01", "status": "signed",
+                "categories": ("technology",), "rule": "first_contract_of_category",
+            },
+            {
+                "type": "product_addition", "effective": "2057-11-01", "status": "signed",
+                "categories": ("industrial_goods",), "rule": "first_contract_of_category",
+            },
+            {
+                "type": "volume_reduction", "effective": "2058-03-01", "status": "signed", "proposed": "2058-02-15",
+                "initiated_by": "eisenkrone", "volume_after_mcr": 250, "events": (19,),
+            },
+            {
+                "type": "volume_increase", "effective": "2059-01-01", "status": "signed", "volume_after_mcr": 350,
+                "rule": "cumulative_over_90pct", "contracts": ("HMX-CTR-2059-0192",),
+            },
+            {
+                "type": "volume_increase", "effective": "2059-06-01", "status": "signed", "volume_after_mcr": 450,
+                "rule": "cumulative_over_90pct", "contracts": ("HMX-CTR-2059-0236",),
+            },
+            {
+                "type": "volume_increase", "effective": "2060-01-01", "status": "proposed", "proposed": "2059-12-10",
+                "volume_after_mcr": 550, "rule": "cumulative_over_90pct", "contracts": ("HMX-CTR-2060-0275",),
+            },
+        ),
+    },
+    {
+        "number": "EKM-RV-2057-01", "seller": "eisenkrone", "buyer": "corvane",
+        "title": "Joint-Venture-Liefervertrag Halcyon", "start": "2057-01-01", "term_months": 60,
+        "base_volume_mcr": 350, "price_formula": "cost_plus", "indexation": "category_price_index",
+        "cost_plus_pct": 12, "exclusivity": "right_of_first_refusal", "exclusive_categories": ("raw_materials",),
+        "notice_days": 360, "scope": ("raw_materials", "industrial_goods"),
+        "amendments": (
+            {
+                "type": "product_addition", "effective": "2057-05-01", "status": "signed", "categories": ("luxury",),
+                "rule": "first_contract_of_category",
+            },
+            {
+                "type": "product_addition", "effective": "2057-06-01", "status": "signed",
+                "categories": ("technology",), "rule": "first_contract_of_category",
+            },
+            {
+                "type": "penalty_clause", "effective": "2058-05-01", "status": "signed", "proposed": "2058-04-28",
+                "initiated_by": "corvane", "contracts": ("EKM-VTR-2057-0064",),
+            },
+            {
+                "type": "volume_increase", "effective": "2059-03-01", "status": "signed", "volume_after_mcr": 450,
+                "rule": "cumulative_over_90pct", "contracts": ("EKM-VTR-2059-0160",),
+            },
+            {
+                "type": "service_level_clause", "effective": "2060-02-01", "status": "proposed",
+                "proposed": "2059-12-23", "initiated_by": "corvane", "contracts": ("EKM-VTR-2059-0160",),
+            },
+            {
+                "type": "volume_increase", "effective": "2060-01-01", "status": "proposed", "proposed": "2059-12-10",
+                "volume_after_mcr": 550, "rule": "cumulative_over_90pct", "contracts": ("EKM-VTR-2060-0219",),
+            },
+        ),
+    },
+    {
+        "number": "EKM-RV-2057-02", "seller": "eisenkrone", "buyer": "helix",
+        "title": "Rahmenvertrag Erze und Energie Brennus/Halcyon – Kharon/Sol", "start": "2057-01-01",
+        "term_months": 42, "base_volume_mcr": 200, "price_formula": "index_linked",
+        "indexation": "category_price_index", "price_index_category": "raw_materials", "adjustment_cap_pct": 10,
+        "exclusivity": "none", "notice_days": 180, "scope": ("energy", "raw_materials"),
+        "amendments": (
+            {
+                "type": "product_addition", "effective": "2057-06-01", "status": "signed", "categories": ("food",),
+                "rule": "first_contract_of_category",
+            },
+            {
+                "type": "product_addition", "effective": "2057-10-01", "status": "signed",
+                "categories": ("technology",), "rule": "first_contract_of_category",
+            },
+            {
+                "type": "product_addition", "effective": "2058-01-01", "status": "signed",
+                "categories": ("industrial_goods",), "rule": "first_contract_of_category",
+            },
+            {
+                "type": "penalty_clause", "effective": "2058-01-09", "status": "signed", "proposed": "2057-12-20",
+                "initiated_by": "helix", "contracts": ("EKM-VTR-2057-0017",),
+            },
+            {
+                "type": "product_addition", "effective": "2058-08-01", "status": "signed", "categories": ("luxury",),
+                "rule": "first_contract_of_category",
+            },
+            {
+                "type": "volume_increase", "effective": "2059-02-01", "status": "signed", "volume_after_mcr": 300,
+                "rule": "cumulative_over_90pct", "contracts": ("EKM-VTR-2059-0151",),
+            },
+            {
+                "type": "escort_clause", "effective": "2060-02-01", "status": "proposed", "proposed": "2059-12-22",
+                "initiated_by": "helix", "escort": "ravenmoor",
+                "contracts": ("EKM-VTR-2057-0043", "EKM-VTR-2058-0107"), "orders": ("EKM-BST-2059-02343",),
+                "events": (74,),
+            },
+            {
+                "type": "volume_increase", "effective": "2060-02-01", "status": "proposed", "proposed": "2059-12-22",
+                "volume_after_mcr": 400, "rule": "cumulative_over_90pct", "contracts": ("EKM-VTR-2060-0234",),
+            },
+            {
+                "type": "term_extension", "effective": "2060-07-01", "status": "proposed", "proposed": "2059-12-22",
+                "initiated_by": "helix", "new_end_date": "2061-06-30",
+            },
+        ),
+    },
+    {
+        "number": "EKM-RV-2057-03", "seller": "eisenkrone", "buyer": "lichtacker",
+        "title": "Liefervertrag Industriegüter und Energie Myrrhen/Tauvel", "start": "2057-01-01", "term_months": 36,
+        "base_volume_mcr": 150, "price_formula": "index_linked", "indexation": "category_price_index",
+        "price_index_category": "energy", "adjustment_cap_pct": 6, "exclusivity": "none", "notice_days": 90,
+        "scope": ("industrial_goods", "luxury", "raw_materials"),
+        "amendments": (
+            {
+                "type": "product_addition", "effective": "2057-08-01", "status": "signed", "categories": ("energy",),
+                "rule": "first_contract_of_category",
+            },
+            {
+                "type": "product_addition", "effective": "2058-02-01", "status": "signed",
+                "categories": ("technology",), "rule": "first_contract_of_category",
+            },
+            {
+                "type": "penalty_clause", "effective": "2058-09-14", "status": "signed", "proposed": "2058-08-28",
+                "initiated_by": "lichtacker", "contracts": ("EKM-VTR-2058-0099",),
+            },
+            {
+                "type": "partial_termination", "effective": "2060-01-18", "status": "signed",
+                "proposed": "2059-10-20", "initiated_by": "lichtacker", "categories": ("energy",),
+                "contracts": ("EKM-VTR-2059-0167", "EKM-VTR-2058-0105", "EKM-VTR-2058-0099"),
+            },
+            {
+                "type": "price_adjustment", "effective": "2060-01-18", "status": "rejected", "proposed": "2059-10-28",
+                "initiated_by": "eisenkrone", "categories": ("energy",), "pct": -5,
+            },
+            {
+                "type": "volume_increase", "effective": "2059-11-01", "status": "signed", "volume_after_mcr": 200,
+                "rule": "cumulative_over_90pct", "contracts": ("EKM-VTR-2059-0211",),
+            },
+            {
+                "type": "term_extension", "effective": "2059-11-01", "status": "signed", "initiated_by": "lichtacker",
+                "new_end_date": "2060-12-31", "rule": "calloff_after_end",
+            },
+        ),
+    },
+    {
+        "number": "FSP-RV-2059-01", "seller": "feldspat", "buyer": "eisenkrone",
+        "title": "Abnahmerahmen Quantenquarz Becker", "start": "2059-08-01", "term_months": 24, "base_volume_mcr": 12,
+        "price_formula": "market_minus", "indexation": "category_price_index", "base_discount_pct": 5,
+        "exclusivity": "right_of_first_refusal", "exclusive_archetypes": ("quantum_quartz",), "notice_days": 90,
+        "scope": ("raw_materials",),
+        "amendments": (
+            {
+                "type": "price_adjustment", "effective": "2059-11-20", "status": "signed", "proposed": "2059-11-05",
+                "initiated_by": "feldspat", "pct": 12, "contracts": ("FSP-VTR-2059-0019",), "events": (65, 66),
+            },
+            {
+                "type": "volume_increase", "effective": "2060-01-15", "status": "proposed", "proposed": "2059-12-15",
+                "initiated_by": "feldspat", "volume_after_mcr": 20,
+            },
+        ),
+    },
+    {
+        "number": "GFW-RV-2057-01", "seller": "graufalk", "buyer": "helix",
+        "title": "Flottenrahmenvertrag Rumpf- und Triebwerksteile", "start": "2057-01-01", "term_months": 48,
+        "base_volume_mcr": 180, "price_formula": "index_linked", "indexation": "category_price_index",
+        "price_index_category": "industrial_goods", "exclusivity": "none", "notice_days": 180,
+        "scope": ("industrial_goods",),
+        "amendments": (
+            {
+                "type": "product_addition", "effective": "rule", "status": "signed", "categories": ("technology",),
+                "rule": "first_contract_of_category",
+            },
+            {
+                "type": "volume_increase", "effective": "2058-12-20", "status": "signed", "proposed": "2058-12-16",
+                "initiated_by": "helix", "delta_mcr": 60, "contracts": ("HMX-CTR-2058-0173",),
+            },
+            {
+                "type": "service_level_clause", "effective": "2060-01-15", "status": "proposed",
+                "proposed": "2059-12-31", "initiated_by": "helix",
+                "orders": ("HMX-ORD-2059-01763", "HMX-ORD-2059-01788"),
+                "shipments": ("HMX-SHP-2059-01721", "HMX-SHP-2059-01746"),
+            },
+        ),
+    },
+    {
+        "number": "GFW-RV-2057-02", "seller": "graufalk", "buyer": "cindervale",
+        "title": "Allianzvertrag Navigationsplattform", "start": "2057-01-01", "term_months": 60,
+        "base_volume_mcr": 220, "price_formula": "cost_plus", "indexation": "category_price_index",
+        "cost_plus_pct": 8, "exclusivity": "none", "notice_days": 365, "scope": ("industrial_goods", "technology"),
+        "amendments": (
+            {
+                "type": "exclusivity_clause", "effective": "2058-03-15", "status": "signed", "proposed": "2058-02-20",
+                "initiated_by": "graufalk", "archetypes": ("drive_parts",), "exclusivity": "mutual", "events": (19,),
+            },
+            {
+                "type": "volume_increase", "effective": "rule", "status": "signed", "delta_mcr": 80,
+                "rule": "cumulative_over_90pct",
+            },
+            {
+                "type": "confidentiality_clause", "effective": "2060-01-15", "status": "proposed",
+                "proposed": "2059-12-29", "initiated_by": "cindervale",
+            },
+        ),
+    },
+    {
+        "number": "GFW-RV-2058-01", "seller": "graufalk", "buyer": "ravenmoor",
+        "title": "Geleitschiff-Rahmenvertrag Kharon/Brennus", "start": "2058-07-15", "term_months": 36,
+        "base_volume_mcr": 90, "price_formula": "index_linked", "indexation": "category_price_index",
+        "exclusivity": "right_of_first_refusal", "exclusive_archetypes": ("hull_plating",),
+        "exclusivity_system": "kharon", "notice_days": 180, "scope": ("industrial_goods",),
+        "amendments": (
+            {
+                "type": "product_addition", "effective": "rule", "status": "signed", "categories": ("technology",),
+                "rule": "first_contract_of_category",
+            },
+            {
+                "type": "volume_increase", "effective": "2059-09-01", "status": "signed", "proposed": "2059-08-25",
+                "initiated_by": "ravenmoor", "delta_mcr": 40, "events": (45, 57, 58),
+            },
+        ),
+    },
+    {
+        "number": "CCI-MSA-2057-01", "seller": "cindervale", "buyer": "eisenkrone",
+        "title": "AI Control & Robotics Framework Agreement", "start": "2057-01-01", "term_months": 48,
+        "base_volume_mcr": 120, "price_formula": "fixed", "indexation": "none",
+        "exclusivity": "right_of_first_refusal", "exclusive_categories": ("technology",),
+        "exclusivity_system": "halcyon", "notice_days": 180, "scope": ("technology", "industrial_goods"),
+        "amendments": (
+            {
+                "type": "service_level_clause", "effective": "2058-03-01", "status": "signed",
+                "proposed": "2058-02-10", "initiated_by": "eisenkrone", "events": (19,),
+            },
+            {
+                "type": "price_adjustment", "effective": "2058-12-15", "status": "signed", "proposed": "2058-11-20",
+                "initiated_by": "cindervale", "pct": -8, "events": (36,),
+            },
+            {
+                "type": "suspension", "effective": "2059-12-15", "status": "signed", "proposed": "2059-12-05",
+                "initiated_by": "eisenkrone", "events": (70,),
+            },
+        ),
+    },
+    {
+        "number": "KHB-RV-2058-01", "seller": "kuppelwerk", "buyer": "pionierwerk",
+        "title": "Rahmenvertrag Habitatmodule Isolde", "start": "2058-06-01", "term_months": 36,
+        "base_volume_mcr": 70, "price_formula": "cost_plus", "indexation": "fuel_index", "cost_plus_pct": 10,
+        "exclusivity": "seller_exclusive", "exclusive_archetypes": ("habitat_modules",),
+        "exclusivity_system": "isolde", "notice_days": 180, "scope": ("industrial_goods",),
+        "amendments": (
+            {
+                "type": "volume_increase", "effective": "2059-05-01", "status": "signed", "proposed": "2059-04-15",
+                "initiated_by": "pionierwerk", "delta_mcr": 35,
+            },
+            {
+                "type": "scope_extension", "effective": "2059-10-01", "status": "signed", "proposed": "2059-09-10",
+                "initiated_by": "pionierwerk", "archetypes": ("sinter_blocks",), "system": "serravel",
+            },
+        ),
+    },
+    {
+        "number": "KHB-RV-2059-01", "seller": "kuppelwerk", "buyer": "lichtacker",
+        "title": "Baustoffrahmen Verbundstahl und Habitatbaustoffe Tauvel/Myrrhen", "start": "2059-04-01",
+        "term_months": 24, "base_volume_mcr": 30, "price_formula": "cost_plus", "indexation": "fuel_index",
+        "cost_plus_pct": 10, "exclusivity": "none", "notice_days": 90, "scope": ("industrial_goods", "raw_materials"),
+        "scope_archetypes": {"raw_materials": ("regolith", "water_ice")},
+        "amendments": (
+            {
+                "type": "product_addition", "effective": "2059-08-01", "status": "signed", "proposed": "2059-07-20",
+                "initiated_by": "kuppelwerk", "archetypes": ("habitat_modules",), "events": (53,),
+            },
+            {"type": "volume_increase", "effective": "rule", "status": "signed", "rule": "cumulative_over_90pct",},
+            {
+                "type": "exclusivity_clause", "effective": "2060-02-01", "status": "proposed",
+                "proposed": "2059-12-10", "initiated_by": "kuppelwerk",
+                "archetypes": ("sinter_blocks", "habitat_modules"), "exclusivity": "regional_exclusive",
+                "system": "myrrhen",
+            },
+        ),
+    },
+    {
+        "number": "EFF-MSA-2059-01", "seller": "emberline", "buyer": "corvane",
+        "title": "Helium-3 Supply Framework Halcyon Works VI", "start": "2059-04-01", "term_months": 24,
+        "base_volume_mcr": 40, "price_formula": "index_linked", "indexation": "fuel_index", "exclusivity": "none",
+        "notice_days": 90, "scope": ("energy",),
+        "amendments": (
+            {
+                "type": "force_majeure_clause", "effective": "2059-09-15", "status": "signed",
+                "proposed": "2059-09-05", "initiated_by": "emberline", "events": (59,),
+            },
+            {"type": "volume_increase", "effective": "rule", "status": "signed", "rule": "cumulative_over_90pct",},
+            {
+                "type": "exclusivity_clause", "effective": "2060-01-01", "status": "proposed",
+                "proposed": "2059-12-05", "initiated_by": "emberline", "archetypes": ("helium3",),
+                "exclusivity": "buyer_exclusive", "system": "halcyon",
+            },
+        ),
+    },
+    {
+        "number": "EFF-MSA-2059-02", "seller": "emberline", "buyer": "lichtacker",
+        "title": "Energy Framework Agreement Agrarstation Seip", "start": "2059-11-15", "term_months": 24,
+        "base_volume_mcr": 18, "price_formula": "index_linked", "indexation": "fuel_index", "exclusivity": "none",
+        "notice_days": 90, "scope": ("energy",),
+        "amendments": (
+            {
+                "type": "exclusivity_clause", "effective": "2060-01-18", "status": "signed", "proposed": "2059-11-15",
+                "initiated_by": "lichtacker", "categories": ("energy",), "exclusivity": "right_of_first_refusal",
+                "system": "myrrhen",
+            },
+        ),
+    },
+    {
+        "number": "RCS-MSA-2058-01", "seller": "ravenmoor", "buyer": "helix",
+        "title": "Escort & Frontier Supply Framework Kharon Corridor", "start": "2058-08-01", "term_months": 36,
+        "base_volume_mcr": 90, "price_formula": "cost_plus", "indexation": "risk_index", "cost_plus_pct": 15,
+        "exclusivity": "regional_exclusive", "exclusive_archetypes": ("escort_drones", "sensor_arrays"),
+        "exclusivity_system": "kharon", "notice_days": 90,
+        "scope": ("industrial_goods", "technology", "medical", "food"), "escort": "ravenmoor",
+        "amendments": (
+            {
+                "type": "volume_increase", "effective": "2059-06-15", "status": "signed", "proposed": "2059-06-05",
+                "initiated_by": "helix", "delta_mcr": 40, "events": (51,),
+            },
+            {
+                "type": "escort_clause", "effective": "2060-02-01", "status": "proposed", "proposed": "2059-12-22",
+                "initiated_by": "ravenmoor", "escort": "ravenmoor", "events": (74,),
+            },
+            {
+                "type": "scope_extension", "effective": "2060-01-15", "status": "proposed", "proposed": "2059-12-23",
+                "initiated_by": "helix", "station": "Kharon Landing IV", "events": (74,),
+            },
+        ),
+    },
+    {
+        "number": "RVF-RV-2058-01", "seller": "raureif", "buyer": "pionierwerk",
+        "title": "Versorgungsrahmen Isolde – Volatile", "start": "2058-01-01", "term_months": 36,
+        "base_volume_mcr": 80, "price_formula": "index_linked", "indexation": "fuel_index",
+        "exclusivity": "regional_exclusive", "exclusive_archetypes": ("water_ice",), "exclusivity_system": "isolde",
+        "notice_days": 180, "scope": ("raw_materials", "energy"),
+        "amendments": (
+            {
+                "type": "exclusivity_clause", "effective": "2058-09-01", "status": "signed", "proposed": "2058-08-15",
+                "initiated_by": "pionierwerk", "archetypes": ("nitrogen_ice",), "exclusivity": "regional_exclusive",
+                "system": "isolde",
+            },
+            {
+                "type": "volume_increase", "effective": "2059-06-01", "status": "signed", "proposed": "2059-05-15",
+                "initiated_by": "pionierwerk", "delta_mcr": 30,
+            },
+            {
+                "type": "price_adjustment", "effective": "2060-01-01", "status": "proposed", "proposed": "2059-11-20",
+                "initiated_by": "raureif", "pct": 10,
+            },
+        ),
+    },
+    {
+        "number": "RVF-RV-2058-02", "seller": "raureif", "buyer": "eisenkrone",
+        "title": "Volatile-Liefervertrag Myrrhen/Brennus", "start": "2058-03-01", "term_months": 24,
+        "base_volume_mcr": 45, "price_formula": "index_linked", "indexation": "category_price_index",
+        "price_index_category": "raw_materials", "exclusivity": "none", "notice_days": 90,
+        "scope": ("raw_materials", "energy"), "price_floor": True,
+        "amendments": (
+            {
+                "type": "price_adjustment", "effective": "2059-08-01", "status": "signed", "proposed": "2059-07-25",
+                "initiated_by": "eisenkrone", "pct": -6, "events": (52,),
+            },
+            {
+                "type": "term_extension", "effective": "2060-02-29", "status": "proposed", "proposed": "2059-12-15",
+                "initiated_by": "eisenkrone", "new_end_date": "2061-02-28",
+            },
+        ),
+    },
+    {
+        "number": "OSP-MSA-2058-01", "seller": "outmark", "buyer": "pionierwerk",
+        "title": "Survey Data License Framework Serravel/Isolde", "start": "2058-02-01", "term_months": 36,
+        "base_volume_mcr": 25, "price_formula": "fixed", "indexation": "none", "exclusivity": "none",
+        "notice_days": 180, "scope": ("technology", "raw_materials"),
+        "amendments": (
+            {
+                "type": "exclusivity_clause", "effective": "2059-08-15", "status": "signed", "proposed": "2059-07-30",
+                "initiated_by": "pionierwerk", "archetypes": ("survey_charts",), "exclusivity": "regional_exclusive",
+                "system": "serravel", "events": (52,),
+            },
+            {
+                "type": "product_addition", "effective": "2059-11-01", "status": "signed",
+                "archetypes": ("terraforming_cultures",), "condition": "archetype_in_seller_pool",
+            },
+        ),
+    },
+    {
+        "number": "SGM-RV-2059-01", "seller": "morgengrund", "buyer": "pionierwerk",
+        "title": "Versorgungsrahmen Isolde – Lebensmittel für Bautrupps", "start": "2059-01-01", "term_months": 12,
+        "base_volume_mcr": 5, "price_formula": "fixed", "indexation": "none", "exclusivity": "none",
+        "notice_days": 60, "scope": ("food",), "auto_renewal": True, "renewal_months": 12, "harvest_clause": True,
+        "amendments": (
+            {
+                "type": "volume_increase", "effective": "2059-07-01", "status": "signed", "proposed": "2059-06-15",
+                "initiated_by": "pionierwerk", "delta_mcr": 2,
+            },
+            {"type": "term_extension", "effective": "2060-01-01", "status": "signed", "new_end_date": "2060-12-31",},
+        ),
+    },
+    {
+        "number": "SGM-RV-2059-02", "seller": "morgengrund", "buyer": "ravenmoor",
+        "title": "Garnisonsrationen Kharon und Brennus", "start": "2059-03-01", "term_months": 12,
+        "base_volume_mcr": 6, "price_formula": "fixed", "indexation": "none", "exclusivity": "none",
+        "notice_days": 60, "scope": ("food",),
+        "amendments": (
+            {
+                "type": "force_majeure_clause", "effective": "2059-03-01", "status": "signed",
+                "proposed": "2059-02-15", "initiated_by": "morgengrund",
+            },
+            {
+                "type": "term_extension", "effective": "2060-02-29", "status": "proposed", "proposed": "2059-12-20",
+                "initiated_by": "ravenmoor", "new_end_date": "2061-02-28",
+            },
+        ),
+    },
+)
+
+# Sperren für neue Verkäufer (Durchlauf 2): gelten für Verträge (Beginn) und Partner-Spotbestellungen (Datum).
+# Vorkaufsrechte filtern nicht; ihre Verstöße sind Stoff für den Schriftverkehr.
+EXCLUSIVITY_FILTERS: tuple[dict[str, Any], ...] = (
+    {"sellers": ("emberline",), "buyer": "corvane", "categories": ("energy",), "until": "2059-03-14",
+     "reason": "HMX-MSA-2057-02: Energie käuferexklusiv"},
+    {"sellers": ("kuppelwerk",), "buyer": "lichtacker", "categories": ("industrial_goods",), "until": "2059-03-14",
+     "reason": "Vorkaufsrecht Helix (HMX-MSA-2057-01)"},
+    {"sellers": ("graufalk",), "buyer": "helix", "archetypes": ("escort_drones", "sensor_arrays"),
+     "system": "kharon", "from": "2058-08-01", "reason": "RCS-MSA-2058-01 regional exklusiv"},
+    {"sellers": ("emberline", "kometenpost"), "buyer": "cindervale", "archetypes": ("drive_parts",),
+     "from": "2058-03-15", "reason": "GFW-RV-2057-02 gegenseitig"},
+    {"sellers": ("emberline", "lanternfish", "second_hull", "kuppelwerk"), "buyer": "graufalk",
+     "archetypes": ("nav_computers",), "from": "2058-03-15", "reason": "GFW-RV-2057-02 gegenseitig"},
+    {"sellers": ("second_hull", "outmark", "morgengrund", "kuppelwerk"), "buyer": "pionierwerk",
+     "archetypes": ("water_ice",), "system": "isolde", "from": "2058-01-01", "reason": "RVF-RV-2058-01 regional"},
+    {"sellers": ("second_hull", "outmark", "morgengrund", "kuppelwerk"), "buyer": "pionierwerk",
+     "archetypes": ("nitrogen_ice",), "system": "isolde", "from": "2058-09-01",
+     "reason": "RVF-RV-2058-01, Nachtrag Stickstoffeis"},
+    {"sellers": ("kuppelwerk",), "allowed_buyer": "pionierwerk", "archetypes": ("habitat_modules",),
+     "system": "isolde", "from": "2058-06-01", "reason": "KHB-RV-2058-01 verkäuferexklusiv"},
+)
+
+# Einstellungsgrenzen der neuen Firmen: Vorstand, erste Partnerbetreuung und erste Marktaufklärung sind
+# spätestens an diesem Tag eingestellt (frühestes verankertes Schreiben bzw. Rahmenbeginn minus Vorlauf).
+HIRE_DATE_CAPS: dict[str, date] = {
+    "graufalk": date(2056, 11, 2), "cindervale": date(2056, 11, 2), "kuppelwerk": date(2058, 4, 2),
+    "emberline": date(2059, 1, 31), "kometenpost": date(2059, 4, 12), "pionierwerk": date(2057, 11, 2),
+    "ravenmoor": date(2058, 5, 16), "raureif": date(2057, 11, 2), "outmark": date(2057, 12, 3),
+    "morgengrund": date(2058, 11, 2), "second_hull": date(2058, 3, 2),
+}
+HIRE_CAP_ROLES = ("executive", "relations", "intelligence")
+
+# Sollwerte des Bestandsvergleichs bei Seed 42 (Entscheidung Phase 2, Abschnitt 5.2)
+BASELINE_EXPECTED_ASSIGNED_CONTRACTS = 341
+BASELINE_EXPECTED_VOLUME_TRIGGERS: frozenset[str] = frozenset({
+    "HMX-CTR-2058-0161", "HMX-CTR-2059-0259", "HMX-CTR-2058-0152", "HMX-CTR-2059-0213", "HMX-CTR-2060-0281",
+    "HMX-CTR-2059-0192", "HMX-CTR-2059-0236", "HMX-CTR-2060-0275", "EKM-VTR-2059-0160", "EKM-VTR-2060-0219",
+    "EKM-VTR-2059-0151", "EKM-VTR-2060-0234", "EKM-VTR-2059-0211",
+})
 
 INCIDENT_CAUSES: tuple[tuple[str, str], ...] = (
     ("Ausweichkurs wegen Asteroidensturm", "Rerouted around an asteroid storm"),
@@ -1061,13 +2099,15 @@ PRIMARY_KEYS: dict[str, str] = {
     "inventory": "inventory_id", "contracts": "contract_id", "customers": "customer_id", "orders": "order_id",
     "order_items": "order_item_id", "shipments": "shipment_id", "price_history": "price_history_id",
     "employees": "employee_id", "events": "event_id", "event_effects": "event_effect_id",
-    "company_financials": "financial_id",
+    "company_financials": "financial_id", "framework_agreements": "framework_agreement_id",
+    "framework_agreement_amendments": "amendment_id", "framework_agreement_scope": "scope_id",
 }
 
 INSERT_ORDER: tuple[str, ...] = (
     "companies", "star_systems", "stations", "products", "trade_partnerships", "company_rivalries",
-    "trade_routes", "inventory", "contracts", "customers", "orders", "order_items", "shipments",
-    "price_history", "employees", "events", "event_effects", "company_financials",
+    "framework_agreements", "trade_routes", "inventory", "contracts", "customers", "orders", "order_items",
+    "shipments", "price_history", "employees", "events", "event_effects", "company_financials",
+    "framework_agreement_amendments", "framework_agreement_scope",
 )
 
 
@@ -1100,6 +2140,8 @@ class World:
     planned_events: list[dict[str, Any]] = field(default_factory=list)
     shocks: dict[tuple[int, int], list[dict[str, Any]]] = field(default_factory=lambda: defaultdict(list))
     targets: dict[int, dict[str, int]] = field(default_factory=dict)
+    frameworks: dict[tuple[int, int], dict[str, Any]] = field(default_factory=dict)
+    extension_fakers: dict[str, Faker] = field(default_factory=dict)
 
     def add(self, table: str, row: dict[str, Any]) -> dict[str, Any]:
         """Fügt eine Zeile mit fortlaufender ID hinzu und gibt sie zurück."""
@@ -1118,8 +2160,54 @@ class World:
         return self.companies[company_id]["language"]
 
     def fake(self, company_id: int) -> Faker:
-        """Faker-Instanz in der Sprache der Firma."""
+        """Faker-Instanz in der Sprache der Firma (im aktiven Zufallsstrom)."""
         return self.fakers[self.language(company_id)]
+
+    def key_of(self, company_id: int) -> str:
+        """Profil-key einer Firma."""
+        return self.profiles[company_id].key
+
+    def is_legacy(self, company_id: int) -> bool:
+        """True für die sechs Bestandsfirmen."""
+        return self.profiles[company_id].key in LEGACY_COMPANY_KEYS
+
+    def legacy_company_ids(self) -> list[int]:
+        """Bestandsfirmen in fester Reihenfolge."""
+        return [cid for cid in self.companies if self.is_legacy(cid)]
+
+    def extension_company_ids(self) -> list[int]:
+        """Erweiterungsfirmen in fester Reihenfolge."""
+        return [cid for cid in self.companies if not self.is_legacy(cid)]
+
+    @contextmanager
+    def company_stream(self, key: str, step: str) -> Iterator[random.Random]:
+        """Aktiviert den Zufallsstrom einer Firma für einen Generierungsschritt.
+
+        Bestandsfirmen nutzen weiter den gemeinsamen Strom (`self.rng`, Faker je Sprache) in der
+        bisherigen Reihenfolge. Erweiterungsfirmen bekommen einen eigenen, aus (Seed, key, Schritt)
+        abgeleiteten Strom samt eigener Faker-Instanzen. So verschieben neue Firmen die Zufallsfolge
+        der Bestandsfirmen nicht.
+        """
+        if key in LEGACY_COMPANY_KEYS:
+            yield self.rng
+            return
+        saved_rng, saved_fakers = self.rng, self.fakers
+        stream_seed = derived_seed(self.seed, key, step)
+        if not self.extension_fakers:
+            self.extension_fakers = {language: Faker(language) for language in LANGUAGES}
+        for offset, (language, fake) in enumerate(self.extension_fakers.items()):
+            fake.seed_instance(stream_seed + offset)
+        self.rng, self.fakers = random.Random(stream_seed), self.extension_fakers
+        try:
+            yield self.rng
+        finally:
+            self.rng, self.fakers = saved_rng, saved_fakers
+
+
+def derived_seed(seed: int, key: str, step: str) -> int:
+    """Stabiler Teil-Seed aus (Seed, Firmen-key, Schritt), unabhängig von PYTHONHASHSEED."""
+    digest = hashlib.sha256(f"{seed}:{key}:{step}".encode("utf-8")).digest()
+    return int.from_bytes(digest[:8], "big")
 
 
 def build_world(seed: int) -> World:
@@ -1135,47 +2223,66 @@ def build_world(seed: int) -> World:
 
 
 def generate_companies(world: World) -> None:
-    """Legt die sechs Firmen samt Mengenzielen innerhalb der Größenklassen an."""
-    rng = world.rng
+    """Legt die 18 Firmen samt Mengenzielen innerhalb der Größenklassen an.
+
+    Zuerst die sechs Bestandsfirmen mit dem gemeinsamen Strom (inklusive der bisherigen
+    Mindest-Stationszahl), danach die Erweiterungsfirmen in eigenen Strömen.
+    """
     for profile in COMPANY_PROFILES:
-        size = SIZE_PROFILES[profile.size_class]
-        founded_year = rng.randint(*profile.founded_range)
-        founder = person_name(world.fakers[profile.language])
-        row = world.add("companies", {
-            "name": profile.name,
-            "slug": profile.slug,
-            "language": profile.language,
-            "size_class": profile.size_class,
-            "headquarters_station_id": None,  # wird in Schritt 2 gesetzt
-            "founded_year": founded_year,
-            "description": profile.description.format(name=profile.name, year=founded_year, founder=founder),
-            "credit_rating": rng.choice(profile.credit_ratings),
-            "is_player_accessible": 1,
-            "specialization": profile.specialization,
-            "network_role": profile.network_role,
-            "data_window_start": fmt_date(shift_months(GAME_REFERENCE_DATE, -size.months)),
-            "starting_cash": round(rng.uniform(*size.starting_cash), -3),
-        })
-        company_id = row["company_id"]
-        world.companies[company_id] = row
-        world.profiles[company_id] = profile
-        world.company_ids_by_key[profile.key] = company_id
-        world.targets[company_id] = {
-            "stations": rng.randint(*size.stations),
-            "products": rng.randint(*size.products),
-            "contracts": rng.randint(*size.contracts),
-            "orders": rng.randint(*size.orders),
-            "customers": rng.randint(*size.customers),
-            "employees": rng.randint(*size.employees),
-        }
-    ensure_minimum_station_count(world)
+        if profile.key in LEGACY_COMPANY_KEYS:
+            add_company(world, profile)
+    ensure_minimum_station_count(world, world.legacy_company_ids())
+    for profile in COMPANY_PROFILES:
+        if profile.key not in LEGACY_COMPANY_KEYS:
+            with world.company_stream(profile.key, "company"):
+                add_company(world, profile)
+    with world.company_stream("extension", "station_minimum"):
+        ensure_minimum_station_count(world, world.extension_company_ids())
 
 
-def ensure_minimum_station_count(world: World) -> None:
-    """Erhöht Stationszahlen großer/mittlerer Firmen, bis die Welt mindestens 30 Stationen hat."""
+def add_company(world: World, profile: CompanyProfile) -> None:
+    """Legt eine Firma samt Mengenzielen im aktiven Zufallsstrom an."""
+    rng = world.rng
+    size = SIZE_PROFILES[profile.size_class]
+    founded_year = rng.randint(*profile.founded_range)
+    founder = person_name(world.fakers[profile.language])
+    row = world.add("companies", {
+        "name": profile.name,
+        "slug": profile.slug,
+        "language": profile.language,
+        "size_class": profile.size_class,
+        "headquarters_station_id": None,  # wird in Schritt 2 gesetzt
+        "founded_year": founded_year,
+        "description": profile.description.format(name=profile.name, year=founded_year, founder=founder),
+        "credit_rating": rng.choice(profile.credit_ratings),
+        "is_player_accessible": 1,
+        "specialization": profile.specialization,
+        "network_role": profile.network_role,
+        "data_window_start": fmt_date(shift_months(GAME_REFERENCE_DATE, -size.months)),
+        "starting_cash": round(rng.uniform(*size.starting_cash), -3),
+    })
+    company_id = row["company_id"]
+    world.companies[company_id] = row
+    world.profiles[company_id] = profile
+    world.company_ids_by_key[profile.key] = company_id
+    world.targets[company_id] = {
+        "stations": rng.randint(*size.stations),
+        "products": rng.randint(*size.products),
+        "contracts": rng.randint(*size.contracts),
+        "orders": rng.randint(*size.orders),
+        "customers": rng.randint(*size.customers),
+        "employees": rng.randint(*size.employees),
+    }
+
+
+def ensure_minimum_station_count(world: World, candidates: Sequence[int]) -> None:
+    """Erhöht Stationszahlen großer/mittlerer Firmen, bis die Welt mindestens 30 Stationen hat.
+
+    Aufgestockt werden nur die übergebenen Firmen (Bestandsschutz: im zweiten Aufruf nur neue Firmen).
+    """
     while sum(target["stations"] for target in world.targets.values()) < MIN_TOTAL_STATIONS:
         expandable = [cid for cid, company in world.companies.items()
-                      if company["size_class"] in ("large", "medium")
+                      if cid in candidates and company["size_class"] in ("large", "medium")
                       and world.targets[cid]["stations"] < SIZE_PROFILES[company["size_class"]].stations[1]]
         if not expandable:
             raise RuntimeError("Mindestanzahl an Stationen ist mit den Größenklassen nicht erreichbar.")
@@ -1258,47 +2365,54 @@ def station_description(language: str, station_type: str, system: dict[str, Any]
 
 def generate_stations(world: World) -> None:
     """Verteilt die Stationen jeder Firma auf ihr Territorium; die erste Station ist der Hauptsitz."""
-    rng = world.rng
     used_names: set[str] = set()
-    for company_id, company in world.companies.items():
-        profile = world.profiles[company_id]
-        language = company["language"]
-        target = world.targets[company_id]["stations"]
-        layout: list[tuple[str, str]] = list(profile.required_stations)
-        while len(layout) < target:
-            layout.append((weighted_choice(rng, profile.station_type_weights),
-                           weighted_choice(rng, profile.territory)))
-        for station_type, system_code in layout:
-            system = world.systems[system_code]
-            info = STATION_TYPES[station_type]
-            security = station_security(system["base_security"], station_type)
-            size = SIZE_PROFILES[company["size_class"]]
-            population = int(rng.randint(*info.population) * size.population_factor
-                             * (2 if system["unlock_tier"] == 0 else 1))
-            coords = [clamp(system[axis] + rng.gauss(0, 12.0), -COORDINATE_LIMIT, COORDINATE_LIMIT)
-                      for axis in ("x", "y", "z")]
-            name = make_station_name(world, company_id, station_type, system["name"], used_names)
-            row = world.add("stations", {
-                "name": name,
-                "company_id": company_id,
-                "system_id": system["system_id"],
-                "system_name": system["name"],
-                "sector": SECTOR_LABELS[system["sector_code"]][language],
-                "x": round(coords[0], 2), "y": round(coords[1], 2), "z": round(coords[2], 2),
-                "population": population,
-                "station_type": station_type,
-                "security_level": security,
-                "description": station_description(language, station_type, system, company["name"], security),
-                "unlock_tier": system["unlock_tier"],
-                "storage_capacity_m3": 0.0,  # wird nach Lager und Bestellungen berechnet
-                "monthly_upkeep": round((info.base_upkeep + population * 3.5)
-                                        * size.upkeep_factor, -2),
-                "docking_fee": round(rng.uniform(150, 600) * SECURITY_PRICE_PREMIUM[security]
-                                     * (1.6 if system["unlock_tier"] == 0 else 1.0), 2),
-            })
-            world.stations[row["station_id"]] = row
-            world.stations_by_company[company_id].append(row)
-        company["headquarters_station_id"] = world.stations_by_company[company_id][0]["station_id"]
+    for company_id in world.companies:
+        with world.company_stream(world.key_of(company_id), "stations"):
+            generate_company_stations(world, company_id, used_names)
+
+
+def generate_company_stations(world: World, company_id: int, used_names: set[str]) -> None:
+    """Stationen einer Firma im aktiven Zufallsstrom (Namen eindeutig über alle Firmen)."""
+    rng = world.rng
+    company = world.companies[company_id]
+    profile = world.profiles[company_id]
+    language = company["language"]
+    target = world.targets[company_id]["stations"]
+    layout: list[tuple[str, str]] = list(profile.required_stations)
+    while len(layout) < target:
+        layout.append((weighted_choice(rng, profile.station_type_weights),
+                       weighted_choice(rng, profile.territory)))
+    for station_type, system_code in layout:
+        system = world.systems[system_code]
+        info = STATION_TYPES[station_type]
+        security = station_security(system["base_security"], station_type)
+        size = SIZE_PROFILES[company["size_class"]]
+        population = int(rng.randint(*info.population) * size.population_factor
+                         * (2 if system["unlock_tier"] == 0 else 1))
+        coords = [clamp(system[axis] + rng.gauss(0, 12.0), -COORDINATE_LIMIT, COORDINATE_LIMIT)
+                  for axis in ("x", "y", "z")]
+        name = make_station_name(world, company_id, station_type, system["name"], used_names)
+        row = world.add("stations", {
+            "name": name,
+            "company_id": company_id,
+            "system_id": system["system_id"],
+            "system_name": system["name"],
+            "sector": SECTOR_LABELS[system["sector_code"]][language],
+            "x": round(coords[0], 2), "y": round(coords[1], 2), "z": round(coords[2], 2),
+            "population": population,
+            "station_type": station_type,
+            "security_level": security,
+            "description": station_description(language, station_type, system, company["name"], security),
+            "unlock_tier": system["unlock_tier"],
+            "storage_capacity_m3": 0.0,  # wird nach Lager und Bestellungen berechnet
+            "monthly_upkeep": round((info.base_upkeep + population * 3.5)
+                                    * size.upkeep_factor, -2),
+            "docking_fee": round(rng.uniform(150, 600) * SECURITY_PRICE_PREMIUM[security]
+                                 * (1.6 if system["unlock_tier"] == 0 else 1.0), 2),
+        })
+        world.stations[row["station_id"]] = row
+        world.stations_by_company[company_id].append(row)
+    company["headquarters_station_id"] = world.stations_by_company[company_id][0]["station_id"]
 
 
 # ---------------------------------------------------------------------------
@@ -1307,72 +2421,85 @@ def generate_stations(world: World) -> None:
 
 
 def generate_products(world: World) -> None:
-    """Leitet für jede Firma einen Warenkatalog aus Archetypen und Varianten ab."""
-    rng = world.rng
-    archetypes_by_category: dict[str, list[ProductArchetype]] = defaultdict(list)
-    for archetype in PRODUCT_ARCHETYPES:
-        archetypes_by_category[archetype.category].append(archetype)
+    """Leitet für jede Firma einen Warenkatalog aus Archetypen und Varianten ab.
 
-    for company_id, company in world.companies.items():
-        profile = world.profiles[company_id]
-        language = company["language"]
-        idx = lang_index(language)
-        has_black_market = any(is_illegal_market(s) for s in world.stations_by_company[company_id])
-        weights = {cat: w for cat, w in profile.category_weights.items()
-                   if cat != "contraband" or has_black_market}
-        pool: dict[str, list[tuple[ProductArchetype, tuple[str, str, float]]]] = {
-            cat: [(arch, variant) for arch in archetypes_by_category[cat] for variant in CATEGORY_VARIANTS[cat]]
-            for cat in weights
-        }
-        for options in pool.values():
-            rng.shuffle(options)
-        target = world.targets[company_id]["products"]
-        sku_counter: dict[str, int] = defaultdict(int)
-        for _ in range(target):
-            available = {cat: w for cat, w in weights.items() if pool[cat]}
-            if not available:
-                break
-            category = weighted_choice(rng, available)
-            archetype, variant = pool[category].pop()
-            variant_label = variant[idx]
-            base_name = archetype.name_de if language == "de_DE" else archetype.name_en
-            name = base_name if variant_label == "Standard" else f"{base_name} {variant_label}"
-            base_price = round(archetype.base_price * variant[2] * rng.uniform(0.92, 1.10), 2)
-            base_cost = round(base_price / rng.uniform(*CATEGORY_MARGIN[category]), 2)
-            volume = round(archetype.volume_m3 * rng.uniform(0.95, 1.05), 4)
-            mass = round(archetype.mass_kg * rng.uniform(0.95, 1.05), 3)
-            unit = UNIT_LABELS[archetype.unit][idx]
-            sku_counter[category] += 1
-            sku = f"{profile.sku_prefix}-{category[:3].upper()}-{sku_counter[category]:04d}"
-            tradeable = 0 if (category in ("technology", "industrial_goods", "medical") and rng.random() < 0.03) else 1
-            description = (
-                f"{name} aus dem Sortiment der {company['name']}. {CATEGORY_FLAVOR[category][0]} "
-                f"Gehandelt je {unit}: {fmt_number(volume, language, 3)} m³, {fmt_number(mass, language, 1)} kg."
-                if language == "de_DE" else
-                f"{name} from the {company['name']} catalogue. {CATEGORY_FLAVOR[category][1]} "
-                f"Traded per {unit}: {fmt_number(volume, language, 3)} m³, {fmt_number(mass, language, 1)} kg."
-            ) + LEGAL_NOTES[archetype.legal_status][idx]
-            if not tradeable:
-                description += (" Prototyp – nur für den internen Gebrauch." if language == "de_DE"
-                                else " Prototype – internal use only.")
-            row = world.add("products", {
-                "company_id": company_id,
-                "sku": sku,
-                "name": name,
-                "category": CATEGORY_LABELS[category][idx],
-                "category_code": category,
-                "archetype_code": archetype.code,
-                "description": description,
-                "base_price": base_price,
-                "base_cost": base_cost,
-                "unit": unit,
-                "volume_m3": volume,
-                "mass_kg": mass,
-                "legal_status": archetype.legal_status,
-                "is_tradeable": tradeable,
-            })
-            world.products[row["product_id"]] = row
-            world.products_by_company[company_id].append(row)
+    Erweiterungs-Archetypen stehen nur den neuen Firmen zur Verfügung, damit die Pools (und damit die
+    Kataloge) der Bestandsfirmen unverändert bleiben.
+    """
+    for company_id in world.companies:
+        legacy = world.is_legacy(company_id)
+        archetypes_by_category: dict[str, list[ProductArchetype]] = defaultdict(list)
+        for archetype in PRODUCT_ARCHETYPES:
+            if not (legacy and archetype.extension):
+                archetypes_by_category[archetype.category].append(archetype)
+        with world.company_stream(world.key_of(company_id), "products"):
+            generate_company_products(world, company_id, archetypes_by_category)
+
+
+def generate_company_products(world: World, company_id: int,
+                              archetypes_by_category: dict[str, list[ProductArchetype]]) -> None:
+    """Warenkatalog einer Firma im aktiven Zufallsstrom."""
+    rng = world.rng
+    company = world.companies[company_id]
+    profile = world.profiles[company_id]
+    language = company["language"]
+    idx = lang_index(language)
+    has_black_market = any(is_illegal_market(s) for s in world.stations_by_company[company_id])
+    weights = {cat: w for cat, w in profile.category_weights.items()
+               if cat != "contraband" or has_black_market}
+    pool: dict[str, list[tuple[ProductArchetype, tuple[str, str, float]]]] = {
+        cat: [(arch, variant) for arch in archetypes_by_category[cat] for variant in CATEGORY_VARIANTS[cat]]
+        for cat in weights
+    }
+    for options in pool.values():
+        rng.shuffle(options)
+    target = world.targets[company_id]["products"]
+    sku_counter: dict[str, int] = defaultdict(int)
+    for _ in range(target):
+        available = {cat: w for cat, w in weights.items() if pool[cat]}
+        if not available:
+            break
+        category = weighted_choice(rng, available)
+        archetype, variant = pool[category].pop()
+        variant_label = variant[idx]
+        base_name = archetype.name_de if language == "de_DE" else archetype.name_en
+        name = base_name if variant_label == "Standard" else f"{base_name} {variant_label}"
+        base_price = round(archetype.base_price * variant[2] * rng.uniform(0.92, 1.10), 2)
+        base_cost = round(base_price / rng.uniform(*CATEGORY_MARGIN[category]), 2)
+        volume = round(archetype.volume_m3 * rng.uniform(0.95, 1.05), 4)
+        mass = round(archetype.mass_kg * rng.uniform(0.95, 1.05), 3)
+        unit = UNIT_LABELS[archetype.unit][idx]
+        sku_counter[category] += 1
+        sku = f"{profile.sku_prefix}-{category[:3].upper()}-{sku_counter[category]:04d}"
+        tradeable = 0 if (category in ("technology", "industrial_goods", "medical") and rng.random() < 0.03) else 1
+        description = (
+            f"{name} aus dem Sortiment der {company['name']}. {CATEGORY_FLAVOR[category][0]} "
+            f"Gehandelt je {unit}: {fmt_number(volume, language, 3)} m³, {fmt_number(mass, language, 1)} kg."
+            if language == "de_DE" else
+            f"{name} from the {company['name']} catalogue. {CATEGORY_FLAVOR[category][1]} "
+            f"Traded per {unit}: {fmt_number(volume, language, 3)} m³, {fmt_number(mass, language, 1)} kg."
+        ) + LEGAL_NOTES[archetype.legal_status][idx]
+        if not tradeable:
+            description += (" Prototyp – nur für den internen Gebrauch." if language == "de_DE"
+                            else " Prototype – internal use only.")
+        row = world.add("products", {
+            "company_id": company_id,
+            "sku": sku,
+            "name": name,
+            "category": CATEGORY_LABELS[category][idx],
+            "category_code": category,
+            "archetype_code": archetype.code,
+            "description": description,
+            "base_price": base_price,
+            "base_cost": base_cost,
+            "unit": unit,
+            "volume_m3": volume,
+            "mass_kg": mass,
+            "legal_status": archetype.legal_status,
+            "is_tradeable": tradeable,
+        })
+        world.products[row["product_id"]] = row
+        world.products_by_company[company_id].append(row)
 
 
 # ---------------------------------------------------------------------------
@@ -1389,77 +2516,792 @@ def partnership_start_date(world: World, seller_id: int, buyer_id: int) -> date:
     return random_date(world.rng, earliest, latest)
 
 
-def generate_partnerships(world: World) -> None:
-    """Erzeugt das gerichtete, unvollständige Partnerschaftsnetz (Verkäufer -> Käufer)."""
+def is_legacy_pair(*keys: str) -> bool:
+    """True, wenn alle beteiligten Firmen Bestandsfirmen sind."""
+    return all(key in LEGACY_COMPANY_KEYS for key in keys)
+
+
+def add_active_partnership(world: World, seller_key: str, buyer_key: str, relationship: str) -> None:
+    """Legt eine aktive, gerichtete Vereinbarung im aktiven Zufallsstrom an."""
     rng = world.rng
-    blueprint = list(PARTNERSHIP_BLUEPRINT)
-    for seller, buyer, relationship, probability in OPTIONAL_PARTNERSHIPS:
-        if rng.random() < probability:
-            blueprint.append((seller, buyer, relationship))
+    seller_id = world.company_ids_by_key[seller_key]
+    buyer_id = world.company_ids_by_key[buyer_key]
+    trust = rng.randint(*TRUST_RANGES[relationship])
+    if "driftwood" in (seller_key, buyer_key):
+        trust = max(10, trust - 15)
+    row = world.add("trade_partnerships", {
+        "company_id": seller_id,
+        "partner_company_id": buyer_id,
+        "relationship_type": relationship,
+        "trust_level": trust,
+        "contract_volume": 0.0,  # Summe der Verträge, wird nach Schritt 8 gesetzt
+        "start_date": fmt_date(partnership_start_date(world, seller_id, buyer_id)),
+        "end_date": None,
+        "is_active": 1,
+    })
+    world.active_agreements[(seller_id, buyer_id)] = row
 
-    for seller_key, buyer_key, relationship in blueprint:
-        seller_id = world.company_ids_by_key[seller_key]
-        buyer_id = world.company_ids_by_key[buyer_key]
-        trust = rng.randint(*TRUST_RANGES[relationship])
-        if "driftwood" in (seller_key, buyer_key):
-            trust = max(10, trust - 15)
-        row = world.add("trade_partnerships", {
-            "company_id": seller_id,
-            "partner_company_id": buyer_id,
-            "relationship_type": relationship,
-            "trust_level": trust,
-            "contract_volume": 0.0,  # Summe der Verträge, wird nach Schritt 7 gesetzt
-            "start_date": fmt_date(partnership_start_date(world, seller_id, buyer_id)),
-            "end_date": None,
-            "is_active": 1,
-        })
-        world.active_agreements[(seller_id, buyer_id)] = row
 
-    for seller_key, buyer_key, relationship in HISTORIC_PARTNERSHIPS:
-        seller_id = world.company_ids_by_key[seller_key]
-        buyer_id = world.company_ids_by_key[buyer_key]
+def add_historic_partnership(world: World, seller_key: str, buyer_key: str, relationship: str) -> None:
+    """Legt eine beendete Vereinbarung an (Bestand: zufällige Daten, Erweiterung: feste Daten)."""
+    rng = world.rng
+    seller_id = world.company_ids_by_key[seller_key]
+    buyer_id = world.company_ids_by_key[buyer_key]
+    fixed = HISTORIC_PARTNERSHIP_DATES.get((seller_key, buyer_key))
+    if fixed is not None:
+        start, end = date.fromisoformat(fixed[0]), date.fromisoformat(fixed[1])
+    else:
         founded = max(world.companies[seller_id]["founded_year"], world.companies[buyer_id]["founded_year"])
         start = random_date(rng, date(founded + 1, 1, 1), date(founded + 2, 12, 31))
         end = random_date(rng, start + timedelta(days=200), world.window_start(buyer_id) - timedelta(days=120))
-        world.add("trade_partnerships", {
-            "company_id": seller_id,
-            "partner_company_id": buyer_id,
-            "relationship_type": relationship,
-            "trust_level": rng.randint(3, 15),
-            "contract_volume": round(rng.uniform(800_000, 4_000_000), 2),  # historisch, vor dem Datenzeitraum
-            "start_date": fmt_date(start),
-            "end_date": fmt_date(end),
-            "is_active": 0,
-        })
+    world.add("trade_partnerships", {
+        "company_id": seller_id,
+        "partner_company_id": buyer_id,
+        "relationship_type": relationship,
+        "trust_level": rng.randint(3, 15),
+        "contract_volume": round(rng.uniform(800_000, 4_000_000), 2),  # historisch, vor dem Datenzeitraum
+        "start_date": fmt_date(start),
+        "end_date": fmt_date(end),
+        "is_active": 0,
+    })
+
+
+def generate_partnerships(world: World) -> None:
+    """Erzeugt das gerichtete, unvollständige Partnerschaftsnetz (Verkäufer -> Käufer).
+
+    Reihenfolge wie vor der Erweiterung: Bestandskanten (inkl. optionaler Kanten) und die historische
+    Bestandskante im gemeinsamen Strom; danach die Erweiterungskanten, jede in einem eigenen Strom.
+    """
+    rng = world.rng
+    blueprint = [edge for edge in PARTNERSHIP_BLUEPRINT if is_legacy_pair(edge[0], edge[1])]
+    extension = [edge for edge in PARTNERSHIP_BLUEPRINT if not is_legacy_pair(edge[0], edge[1])]
+    for seller, buyer, relationship, probability in OPTIONAL_PARTNERSHIPS:
+        if is_legacy_pair(seller, buyer):
+            if rng.random() < probability:
+                blueprint.append((seller, buyer, relationship))
+        else:
+            with world.company_stream(seller, f"optional_partnership:{buyer}") as stream:
+                if stream.random() < probability:
+                    extension.append((seller, buyer, relationship))
+
+    for seller_key, buyer_key, relationship in blueprint:
+        add_active_partnership(world, seller_key, buyer_key, relationship)
+    for seller_key, buyer_key, relationship in HISTORIC_PARTNERSHIPS:
+        if is_legacy_pair(seller_key, buyer_key):
+            add_historic_partnership(world, seller_key, buyer_key, relationship)
+
+    for seller_key, buyer_key, relationship in extension:
+        with world.company_stream(seller_key, f"partnership:{buyer_key}"):
+            add_active_partnership(world, seller_key, buyer_key, relationship)
+    for seller_key, buyer_key, relationship in HISTORIC_PARTNERSHIPS:
+        if not is_legacy_pair(seller_key, buyer_key):
+            stream_key = seller_key if seller_key not in LEGACY_COMPANY_KEYS else buyer_key
+            with world.company_stream(stream_key, f"historic:{seller_key}:{buyer_key}"):
+                add_historic_partnership(world, seller_key, buyer_key, relationship)
 
 
 def generate_rivalries(world: World) -> None:
-    """Legt Konkurrenz- und Spionagebeziehungen zwischen Firmen an."""
+    """Legt Konkurrenz- und Spionagebeziehungen zwischen Firmen an.
+
+    Bestandsrivalitäten werden wie bisher zufällig im gemeinsamen Strom bemessen; die
+    Erweiterungsrivalitäten haben feste, an Bestandsereignissen festgemachte Kennzahlen.
+    """
     rng = world.rng
-    intensity_ranges = {"market_dominance": (55, 80), "industrial_espionage": (70, 95),
-                        "territorial_claims": (40, 75), "resource_competition": (35, 65)}
     for company_key, rival_key, rivalry_type, system_code in RIVALRY_BLUEPRINT:
         company_id = world.company_ids_by_key[company_key]
         rival_id = world.company_ids_by_key[rival_key]
         language = world.language(company_id)
         system = world.systems[system_code]
-        founded = max(world.companies[company_id]["founded_year"], world.companies[rival_id]["founded_year"])
+        template = RIVALRY_TEXT_OVERRIDES.get((company_key, rival_key), RIVALRY_TEXTS[rivalry_type])[language]
+        description = template.format(company=world.companies[company_id]["name"],
+                                      rival=world.companies[rival_id]["name"], system=system["name"])
+        details = RIVALRY_DETAILS.get((company_key, rival_key))
+        if details is None:
+            founded = max(world.companies[company_id]["founded_year"], world.companies[rival_id]["founded_year"])
+            intensity = rng.randint(*RIVALRY_INTENSITY_RANGES[rivalry_type])
+            espionage = rng.randint(50, 95) if rivalry_type == "industrial_espionage" else rng.randint(10, 60)
+            since = fmt_date(random_date(rng, date(founded + 1, 1, 1), GAME_REFERENCE_DATE - timedelta(days=90)))
+        else:
+            since, intensity, espionage = details
         world.add("company_rivalries", {
             "company_id": company_id,
             "rival_company_id": rival_id,
             "rivalry_type": rivalry_type,
-            "intensity": rng.randint(*intensity_ranges[rivalry_type]),
+            "intensity": intensity,
             "contested_system_id": system["system_id"],
-            "espionage_risk": rng.randint(50, 95) if rivalry_type == "industrial_espionage" else rng.randint(10, 60),
-            "since_date": fmt_date(random_date(rng, date(founded + 1, 1, 1), GAME_REFERENCE_DATE - timedelta(days=90))),
-            "description": RIVALRY_TEXTS[rivalry_type][language].format(
-                company=world.companies[company_id]["name"], rival=world.companies[rival_id]["name"],
-                system=system["name"]),
+            "espionage_risk": espionage,
+            "since_date": since,
+            "description": description,
         })
 
 
 # ---------------------------------------------------------------------------
-# 5. Handelsrouten (inkl. Marktplanung: wer bietet an, wer fragt nach)
+# 5. Rahmenverträge (Grundlage; Zuordnung und Nachträge im letzten Schritt)
+# ---------------------------------------------------------------------------
+
+
+def month_start(day: date) -> date:
+    """Erster Tag des Monats."""
+    return day.replace(day=1)
+
+
+def round_up(value: float, step: float) -> float:
+    """Rundet auf ein Vielfaches von step auf."""
+    return math.ceil(value / step - 1e-9) * step
+
+
+def exclusivity_blocks(world: World, seller_id: int, buyer_id: int | None, product: dict[str, Any],
+                       destination: dict[str, Any], day: date) -> bool:
+    """True, wenn eine Exklusivitätssperre (EXCLUSIVITY_FILTERS) den Verkauf verbietet.
+
+    buyer_id ist die Käuferfirma (None bei Nicht-Firmenkunden). Gilt nur für Erweiterungsverkäufer.
+    """
+    seller_key = world.key_of(seller_id)
+    if seller_key in LEGACY_COMPANY_KEYS:
+        return False
+    buyer_key = world.key_of(buyer_id) if buyer_id is not None else None
+    for rule in EXCLUSIVITY_FILTERS:
+        if seller_key not in rule["sellers"]:
+            continue
+        if "categories" in rule and product["category_code"] not in rule["categories"]:
+            continue
+        if "archetypes" in rule and product["archetype_code"] not in rule["archetypes"]:
+            continue
+        if "system" in rule and destination["system_id"] != world.systems[rule["system"]]["system_id"]:
+            continue
+        if "from" in rule and day < date.fromisoformat(rule["from"]):
+            continue
+        if "until" in rule and day > date.fromisoformat(rule["until"]):
+            continue
+        if "allowed_buyer" in rule:
+            if buyer_key != rule["allowed_buyer"]:
+                return True
+        elif buyer_key == rule["buyer"]:
+            return True
+    return False
+
+
+def scope_entry(category: str, archetype: str | None, system_id: int | None, valid_from: date,
+                kind: str = "include", exclusivity: str | None = None,
+                amendment: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Ein Sortimentseintrag eines Rahmenvertrags.
+
+    entry_kind: include (Ware gehört zum Rahmen), exclude (Ware ausdrücklich ausgenommen) oder
+    exclusivity (Exklusivitätsrecht auf die Ware; ändert das Sortiment selbst nicht).
+    """
+    return {"category_code": category, "archetype_code": archetype, "system_id": system_id,
+            "valid_from": valid_from, "valid_to": None, "entry_kind": kind, "exclusivity": exclusivity,
+            "added_by": amendment, "removed_by": None}
+
+
+def entry_active(entry: dict[str, Any], day: date) -> bool:
+    """Eintrag gilt am Tag?"""
+    return entry["valid_from"] <= day and (entry["valid_to"] is None or day <= entry["valid_to"])
+
+
+def entry_matches(entry: dict[str, Any], category: str, archetype: str | None, system_id: int | None) -> bool:
+    """Deckt der Eintrag Ware und Zielsystem ab? (system_id None = Systemprüfung entfällt)"""
+    if entry["archetype_code"] is None:
+        matches = entry["category_code"] == category
+    else:
+        matches = entry["archetype_code"] == archetype
+    return matches and (entry["system_id"] is None or system_id is None or entry["system_id"] == system_id)
+
+
+def scope_covers(entries: list[dict[str, Any]], category: str, archetype: str, system_id: int | None,
+                 day: date) -> bool:
+    """Ware am Tag im Sortiment (aufgenommen und nicht ausgenommen)?"""
+    active = [e for e in entries if entry_active(e, day) and entry_matches(e, category, archetype, system_id)]
+    return (any(e["entry_kind"] == "include" for e in active)
+            and not any(e["entry_kind"] == "exclude" for e in active))
+
+
+def scope_closed_for(entries: list[dict[str, Any]], category: str, archetype: str, day: date) -> bool:
+    """Wurde die Ware vor dem Tag ausdrücklich herausgenommen (Teilkündigung, Herausnahme)?"""
+    for entry in entries:
+        if not entry_matches(entry, category, archetype, None):
+            continue
+        if entry["entry_kind"] == "exclude" and entry_active(entry, day):
+            return True
+        if (entry["entry_kind"] == "include" and entry["removed_by"] is not None
+                and entry["valid_to"] is not None and entry["valid_to"] < day
+                and entry["removed_by"]["amendment_type"] in ("partial_termination", "product_removal")):
+            return True
+    return False
+
+
+def amendment_items(spec: dict[str, Any]) -> list[tuple[str, str | None]]:
+    """(Kategorie, Archetyp)-Paare eines Nachtrags."""
+    items: list[tuple[str, str | None]] = [(category, None) for category in spec.get("categories", ())]
+    items += [(ARCHETYPES_BY_CODE[code].category, code) for code in spec.get("archetypes", ())]
+    return items
+
+
+def apply_scope_change(world: World, entries: list[dict[str, Any]], amendment: dict[str, Any]) -> None:
+    """Wirkung eines Nachtrags auf das Sortiment."""
+    effective = amendment["effective_date"]
+    kind = amendment["amendment_type"]
+    system_id = amendment.get("exclusive_system_id")
+
+    def close(predicate: Callable[[dict[str, Any]], bool]) -> None:
+        for entry in entries:
+            if entry["valid_to"] is None and entry["valid_from"] <= effective and predicate(entry):
+                entry["valid_to"] = effective - timedelta(days=1)
+                entry["removed_by"] = amendment
+
+    for category, archetype in amendment["items"]:
+        if kind == "product_addition":
+            entries.append(scope_entry(category, archetype, None, effective, amendment=amendment))
+        elif kind == "scope_extension":
+            entries.append(scope_entry(category, archetype, system_id, effective, amendment=amendment))
+        elif kind == "product_removal":
+            if archetype is None:
+                close(lambda e, c=category: e["category_code"] == c and e["entry_kind"] != "exclude")
+            else:
+                entries.append(scope_entry(category, archetype, None, effective, kind="exclude", amendment=amendment))
+        elif kind == "partial_termination":
+            close(lambda e, c=category: e["category_code"] == c and e["entry_kind"] != "exclude")
+        elif kind == "exclusivity_clause":
+            entries.append(scope_entry(category, archetype, system_id, effective, kind="exclusivity",
+                                       exclusivity=amendment.get("exclusivity"), amendment=amendment))
+        elif kind == "exclusivity_waiver":
+            close(lambda e, c=category, a=archetype: e["entry_kind"] == "exclusivity"
+                  and e["category_code"] == c and e["archetype_code"] == a)
+
+
+def base_scope_entries(world: World, spec: dict[str, Any], start: date) -> list[dict[str, Any]]:
+    """Grundsortiment eines Rahmenvertrags inklusive Exklusivitätsrechten."""
+    exclusive_system = (world.systems[spec["exclusivity_system"]]["system_id"]
+                        if spec.get("exclusivity_system") else None)
+    entries: list[dict[str, Any]] = []
+    for category in spec["scope"]:
+        archetypes = spec.get("scope_archetypes", {}).get(category)
+        if archetypes:
+            entries += [scope_entry(category, code, None, start) for code in archetypes]
+        else:
+            entries.append(scope_entry(category, None, None, start))
+    for category in spec.get("exclusive_categories", ()):
+        entries.append(scope_entry(category, None, exclusive_system, start, kind="exclusivity",
+                                   exclusivity=spec["exclusivity"]))
+    for code in spec.get("exclusive_archetypes", ()):
+        entries.append(scope_entry(ARCHETYPES_BY_CODE[code].category, code, exclusive_system, start,
+                                   kind="exclusivity", exclusivity=spec["exclusivity"]))
+    return entries
+
+
+def fixed_amendment_specs(world: World, framework: dict[str, Any]) -> list[dict[str, Any]]:
+    """Feste (nicht regelbasierte) Nachträge eines Rahmenvertrags als Arbeitsobjekte."""
+    seller_id, buyer_id = framework["seller_id"], framework["buyer_id"]
+    result = []
+    for index, spec in enumerate(framework["spec"]["amendments"]):
+        if spec.get("rule") in AMENDMENT_RULES:
+            continue
+        if spec.get("condition") == "archetype_in_seller_pool" and not any(
+                p["archetype_code"] in spec.get("archetypes", ()) for p in world.products_by_company[seller_id]):
+            continue
+        effective = date.fromisoformat(spec["effective"])
+        initiator = spec.get("initiated_by")
+        result.append({
+            "spec": spec, "order": index, "amendment_type": spec["type"], "status": spec["status"],
+            "effective_date": effective,
+            "proposed_date": date.fromisoformat(spec["proposed"]) if spec.get("proposed") else None,
+            "initiated_by_company_id": world.company_ids_by_key[initiator] if initiator else buyer_id,
+            "items": amendment_items(spec), "rule": None,
+            "exclusive_system_id": world.systems[spec["system"]]["system_id"] if spec.get("system") else None,
+            "escort_company_id": world.company_ids_by_key[spec["escort"]] if spec.get("escort") else None,
+            "exclusivity": spec.get("exclusivity") or (framework["spec"]["exclusivity"]
+                                                       if spec["type"] == "exclusivity_clause" else None),
+        })
+    return sorted(result, key=lambda a: (a["effective_date"], a["order"]))
+
+
+def framework_extension_end(framework: dict[str, Any], current_end: date, template: dict[str, Any] | None) -> date:
+    """Neues Laufzeitende einer Regel-Verlängerung (Vorlage oder Verlängerungszeitraum des Rahmens)."""
+    if template is not None and template.get("new_end_date"):
+        proposed = date.fromisoformat(template["new_end_date"])
+        if proposed > current_end:
+            return proposed
+    months = framework["spec"].get("renewal_months", DEFAULT_RENEWAL_MONTHS)
+    return shift_months(current_end + timedelta(days=1), months) - timedelta(days=1)
+
+
+def generate_framework_agreements(world: World) -> None:
+    """Legt die Rahmenverträge der aktiven Vereinbarungen an (nach den Partnerschaften, vor den Verträgen).
+
+    Jeder Rahmen gehört zu genau einer aktiven, gerichteten Vereinbarung; fehlt sie (z. B. eine nicht
+    gezogene optionale Vereinbarung), entfällt der Rahmen. Für die Vertragsplanung der neuen Paare wird
+    das geplante Sortiment (Grundsortiment, feste Nachträge, Regel-Aufnahmen) vorab bestimmt.
+    """
+    for spec in FRAMEWORK_BLUEPRINT:
+        seller_id = world.company_ids_by_key[spec["seller"]]
+        buyer_id = world.company_ids_by_key[spec["buyer"]]
+        agreement = world.active_agreements.get((seller_id, buyer_id))
+        if agreement is None:
+            continue
+        language = world.language(seller_id)
+        start = date.fromisoformat(spec["start"])
+        end = shift_months(start, spec["term_months"]) - timedelta(days=1)
+        signed = start - timedelta(days=FRAMEWORK_SIGNING_LEAD_DAYS)
+        price_index_category = spec.get("price_index_category")
+        if price_index_category is None and spec["indexation"] == "category_price_index":
+            price_index_category = spec["scope"][0]
+        row = world.add("framework_agreements", {
+            "agreement_number": spec["number"],
+            "partnership_id": agreement["partnership_id"],
+            "company_id": seller_id,
+            "partner_company_id": buyer_id,
+            "title": spec["title"],
+            "language": language,
+            "signed_date": fmt_date(signed),
+            "start_date": fmt_date(start),
+            "term_months": spec["term_months"],
+            "end_date": fmt_date(end),
+            "current_end_date": fmt_date(end),  # nach Nachträgen im letzten Schritt
+            "status": "active",
+            "base_volume": round(spec["base_volume_mcr"] * 1_000_000.0, 2),
+            "current_volume_cap": round(spec["base_volume_mcr"] * 1_000_000.0, 2),
+            "price_formula": spec["price_formula"],
+            "indexation": spec["indexation"],
+            "price_index_category": price_index_category,
+            "base_discount_pct": spec.get("base_discount_pct"),
+            "cost_plus_pct": spec.get("cost_plus_pct"),
+            "adjustment_cap_pct": spec.get("adjustment_cap_pct"),
+            "exclusivity": spec["exclusivity"],
+            "exclusivity_system_id": (world.systems[spec["exclusivity_system"]]["system_id"]
+                                      if spec.get("exclusivity_system") else None),
+            "notice_period_days": spec["notice_days"],
+            "auto_renewal": int(bool(spec.get("auto_renewal"))),
+            "renewal_months": spec.get("renewal_months"),
+            "penalty_rate_pct": DEFAULT_PENALTY_RATE_PCT,
+            "escort_company_id": world.company_ids_by_key[spec["escort"]] if spec.get("escort") else None,
+            "seller_signatory_id": None,  # nach den Mitarbeitern
+            "buyer_signatory_id": None,
+            "description": "",
+        })
+        framework = {"row": row, "spec": spec, "seller_id": seller_id, "buyer_id": buyer_id,
+                     "language": language, "start": start, "end": end}
+        row["description"] = framework_text(world, framework)
+        # Geplantes Sortiment für die Vertragsplanung: Grundsortiment + feste Nachträge + Regel-Aufnahmen
+        planned = base_scope_entries(world, spec, start)
+        planned_end, suspended = end, None
+        for amendment in fixed_amendment_specs(world, framework):
+            if amendment["status"] != "signed":
+                continue
+            apply_scope_change(world, planned, amendment)
+            if amendment["amendment_type"] == "term_extension" and amendment["spec"].get("new_end_date"):
+                planned_end = max(planned_end, date.fromisoformat(amendment["spec"]["new_end_date"]))
+            if amendment["amendment_type"] == "suspension":
+                suspended = amendment["effective_date"]
+        rule_categories = {category for a in spec["amendments"] if a.get("rule") == "first_contract_of_category"
+                           for category in a.get("categories", ())}
+        if any(a.get("rule") == "calloff_after_end" for a in spec["amendments"]):
+            planned_end = framework_extension_end(framework, planned_end, None)
+        framework.update(planned_scope=planned, planned_end=planned_end, planned_suspension=suspended,
+                         rule_categories=rule_categories)
+        world.frameworks[(seller_id, buyer_id)] = framework
+
+
+def planned_framework_covers(world: World, framework: dict[str, Any], route: dict[str, Any], day: date) -> bool:
+    """Darf ein neues Paar an diesem Tag einen Abrufvertrag über diese Route schließen?"""
+    if day < framework["start"] or day > framework["planned_end"]:
+        return False
+    if framework["planned_suspension"] is not None and day >= framework["planned_suspension"]:
+        return False
+    product = world.products[route["product_id"]]
+    system_id = world.stations[route["destination_station_id"]]["system_id"]
+    if scope_covers(framework["planned_scope"], product["category_code"], product["archetype_code"], system_id, day):
+        return True
+    restricted = product["category_code"] in framework["spec"].get("scope_archetypes", {})
+    return (product["category_code"] in framework["rule_categories"] and not restricted
+            and not scope_closed_for(framework["planned_scope"], product["category_code"],
+                                     product["archetype_code"], day))
+
+
+def framework_text(world: World, framework: dict[str, Any]) -> str:
+    """Vertragstext des Rahmenvertrags in der Sprache des Verkäufers."""
+    spec, row = framework["spec"], framework["row"]
+    language = framework["language"]
+    idx = lang_index(language)
+    seller = world.companies[framework["seller_id"]]["name"]
+    buyer = world.companies[framework["buyer_id"]]["name"]
+    scope_parts = []
+    for category in spec["scope"]:
+        label = CATEGORY_LABELS[category][idx]
+        archetypes = spec.get("scope_archetypes", {}).get(category)
+        if archetypes:
+            names = [getattr(ARCHETYPES_BY_CODE[code], "name_de" if idx == 0 else "name_en") for code in archetypes]
+            label = f"{label} ({', '.join(names)})"
+        scope_parts.append(label)
+    index_category = CATEGORY_LABELS[row["price_index_category"]][idx] if row["price_index_category"] else ""
+    index_label = INDEXATION_LABELS[spec["indexation"]][idx].format(category=index_category)
+    formula = PRICE_FORMULA_TEXTS[spec["price_formula"]][idx].format(
+        index=index_label, cap=fmt_number(spec.get("adjustment_cap_pct", 5), language),
+        pct=fmt_number(spec.get("cost_plus_pct", spec.get("base_discount_pct", 0)), language))
+    exclusivity = EXCLUSIVITY_LABELS[spec["exclusivity"]][idx]
+    excl_items = [CATEGORY_LABELS[c][idx] for c in spec.get("exclusive_categories", ())]
+    excl_items += [getattr(ARCHETYPES_BY_CODE[c], "name_de" if idx == 0 else "name_en")
+                   for c in spec.get("exclusive_archetypes", ())]
+    if excl_items:
+        exclusivity += (" für " if idx == 0 else " for ") + ", ".join(excl_items)
+    if spec.get("exclusivity_system"):
+        system_name = world.systems[spec["exclusivity_system"]]["name"]
+        exclusivity += f" (System {system_name})" if idx == 0 else f" ({system_name} system)"
+    volume = fmt_number(row["base_volume"], language)
+    start = fmt_human_date(framework["start"], language)
+    end = fmt_human_date(framework["end"], language)
+    if idx == 0:
+        text = (f"Rahmenvertrag {row['agreement_number']} zwischen der {seller} (Verkäufer) und der {buyer} "
+                f"(Käufer). Gegenstand: {', '.join(scope_parts)}. Laufzeit {spec['term_months']} Monate vom {start} "
+                f"bis {end}. Rahmenvolumen {volume} {CURRENCY_CODE}. Preisbildung: {formula}. Exklusivität: "
+                f"{exclusivity}. Kündigungsfrist {spec['notice_days']} Tage. Abrufe erfolgen als Einzelverträge "
+                f"(Rahmen-, Dauer- und Exklusivlieferverträge) und werden auf das Rahmenvolumen angerechnet.")
+        if spec.get("auto_renewal"):
+            text += f" Verlängert sich automatisch um {spec.get('renewal_months', DEFAULT_RENEWAL_MONTHS)} Monate."
+        if spec.get("price_floor"):
+            text += " Mindestpreisklausel: Indexanpassungen nach unten sind auf den Basispreis begrenzt."
+        if spec.get("harvest_clause"):
+            text += " Ernteklausel: Mindermengen nach Ernteausfällen begründen keinen Vertragsbruch."
+        if row["escort_company_id"]:
+            text += f" Geleitschutz durch {world.companies[row['escort_company_id']]['name']}."
+        return text
+    text = (f"Framework agreement {row['agreement_number']} between {seller} (seller) and {buyer} (buyer). "
+            f"Scope: {', '.join(scope_parts)}. Term {spec['term_months']} months from {start} to {end}. "
+            f"Framework volume {volume} {CURRENCY_CODE}. Pricing: {formula}. Exclusivity: {exclusivity}. Notice "
+            f"period {spec['notice_days']} days. Call-offs are placed as individual contracts (framework, recurring "
+            f"and exclusive supply contracts) and count against the framework volume.")
+    if spec.get("auto_renewal"):
+        text += f" Renews automatically for {spec.get('renewal_months', DEFAULT_RENEWAL_MONTHS)} months."
+    if spec.get("price_floor"):
+        text += " Price floor: downward index adjustments are capped at the base price."
+    if spec.get("harvest_clause"):
+        text += " Harvest clause: shortfalls after crop failures do not constitute a breach."
+    if row["escort_company_id"]:
+        text += f" Escort provided by {world.companies[row['escort_company_id']]['name']}."
+    return text
+
+
+def amendment_dates(amendment: dict[str, Any]) -> None:
+    """Ergänzt Angebots- und Unterzeichnungsdatum eines Nachtrags (alles bis spätestens 31.12.2059)."""
+    effective = amendment["effective_date"]
+    last_day = GAME_REFERENCE_DATE - timedelta(days=1)
+    explicit = amendment.get("proposed_date")
+    if explicit is None:
+        explicit = (DEFAULT_PROPOSAL_DATE_2060 if amendment["status"] != "signed" and effective >= GAME_REFERENCE_DATE
+                    else effective - timedelta(days=14))
+        amendment["proposed_date"] = min(explicit, last_day)
+        signed = effective - timedelta(days=3)
+    else:
+        signed = min(effective, explicit + timedelta(days=7))
+    amendment["signed_date"] = min(signed, last_day) if amendment["status"] == "signed" else None
+
+
+def finalize_framework_agreements(world: World) -> None:
+    """Ordnet Einzelverträge den Rahmen zu und leitet die Nachträge ab (letzter Generierungsschritt).
+
+    Regel (deterministisch): gleiches Paar, Vertragstyp framework/recurring_supply/exclusive_supply,
+    Beginn zwischen Rahmenbeginn und dem dann gültigen Laufzeitende, Ware am Beginn im Sortiment.
+    Feste Nachträge stammen aus FRAMEWORK_BLUEPRINT; Regel-Nachträge entstehen aus den Verträgen:
+    erster Abruf einer neuen Kategorie (Aufnahme zum Monatsersten), kumulierte Abrufe über 90 % des
+    Volumens (Erhöhung zum Monatsersten des auslösenden Vertrags) und Abrufe nach Laufzeitende
+    (Verlängerung, wirksam 60 Tage vor Ablauf). Jeder Nachtrag wirkt vor dem Vertrag, der ihn nutzt.
+    """
+    contracts_by_pair: dict[tuple[int, int], list[dict[str, Any]]] = defaultdict(list)
+    for contract in world.rows["contracts"]:
+        contracts_by_pair[(contract["company_id"], contract["partner_company_id"])].append(contract)
+    lookups = {
+        "contracts": {c["contract_number"]: c["contract_id"] for c in world.rows["contracts"]},
+        "orders": {o["order_number"]: o["order_id"] for o in world.rows["orders"]},
+        "events": {e["event_id"] for e in world.rows["events"]},
+    }
+    for framework in sorted(world.frameworks.values(), key=lambda f: f["row"]["framework_agreement_id"]):
+        pair = (framework["seller_id"], framework["buyer_id"])
+        process_framework(world, framework, sorted(contracts_by_pair[pair],
+                                                   key=lambda c: (c["start_date"], c["contract_id"])), lookups)
+    assign_framework_signatories(world)
+
+
+def process_framework(world: World, framework: dict[str, Any], contracts: list[dict[str, Any]],
+                      lookups: dict[str, Any]) -> None:
+    """Zuordnung, Nachträge und Sortiment eines Rahmenvertrags."""
+    spec, row = framework["spec"], framework["row"]
+    buyer_id = framework["buyer_id"]
+    entries = base_scope_entries(world, spec, framework["start"])
+    pending = fixed_amendment_specs(world, framework)
+    amendments: list[dict[str, Any]] = []
+    granularity = 10_000_000.0 if row["base_volume"] >= 50_000_000.0 else 1_000_000.0
+    state: dict[str, Any] = {"cap": row["base_volume"], "end": framework["end"], "suspended": None, "cum": 0.0,
+                             "last_volume_effective": framework["start"] - timedelta(days=1),
+                             "last_addition": None}
+    volume_templates = [a for a in spec["amendments"] if a.get("rule") == "cumulative_over_90pct"]
+    extension_templates = [a for a in spec["amendments"] if a.get("rule") == "calloff_after_end"]
+    counters = {"volume": 0, "extension": 0}
+
+    def new_amendment(kind: str, effective: date, rule: str | None, contract: dict[str, Any] | None,
+                      initiator: int, items: list[tuple[str, str | None]] | None = None,
+                      proposed: date | None = None) -> dict[str, Any]:
+        amendment = {"spec": {}, "order": len(amendments) + 1000, "amendment_type": kind, "effective_date": effective,
+                     "status": "signed" if effective < GAME_REFERENCE_DATE else "proposed",
+                     "proposed_date": proposed, "initiated_by_company_id": initiator, "items": items or [],
+                     "rule": rule, "exclusive_system_id": None, "escort_company_id": None, "exclusivity": None,
+                     "trigger_contract": contract}
+        amendments.append(amendment)
+        return amendment
+
+    def apply(amendment: dict[str, Any]) -> None:
+        kind = amendment["amendment_type"]
+        a_spec = amendment["spec"]
+        if kind == "price_adjustment" and "pct" in a_spec:
+            amendment["price_change_pct"] = a_spec["pct"]
+            amendment["price_factor"] = round(1.0 + a_spec["pct"] / 100.0, 4)
+        if kind == "term_extension" and a_spec.get("new_end_date"):
+            amendment["end_date_new"] = date.fromisoformat(a_spec["new_end_date"])
+        if kind in ("volume_increase", "volume_reduction"):
+            before = state["cap"]
+            if a_spec.get("volume_after_mcr") is not None:
+                after = a_spec["volume_after_mcr"] * 1_000_000.0
+            else:
+                after = before + a_spec.get("delta_mcr", 0) * 1_000_000.0
+            if kind == "volume_reduction":
+                after = max(after, round_up(state["cum"], granularity))
+            amendment["volume_before"], amendment["volume_after"] = before, after
+        if amendment["status"] in ("rejected", "withdrawn"):
+            return
+        if kind in ("volume_increase", "volume_reduction"):
+            state["cap"] = amendment["volume_after"]
+            state["last_volume_effective"] = amendment["effective_date"]
+        elif kind == "term_extension" and amendment.get("end_date_new"):
+            state["end"] = max(state["end"], amendment["end_date_new"])
+        elif kind == "suspension":
+            state["suspended"] = amendment["effective_date"]
+        apply_scope_change(world, entries, amendment)
+
+    def apply_due(day: date) -> None:
+        while pending and pending[0]["effective_date"] <= day:
+            amendment = pending.pop(0)
+            amendments.append(amendment)
+            apply(amendment)
+
+    for contract in contracts:
+        day = date.fromisoformat(contract["start_date"])
+        apply_due(day)
+        if contract["contract_type"] not in FRAMEWORK_CALLOFF_TYPES or day < framework["start"]:
+            continue
+        if state["suspended"] is not None and day >= state["suspended"]:
+            continue
+        while day > state["end"] and counters["extension"] < 3:
+            template = (extension_templates[counters["extension"]]
+                        if counters["extension"] < len(extension_templates) else None)
+            counters["extension"] += 1
+            effective = max(framework["start"], state["end"] - timedelta(days=FRAMEWORK_EXTENSION_LEAD_DAYS))
+            initiator = world.company_ids_by_key[template["initiated_by"]] if template and template.get(
+                "initiated_by") else buyer_id
+            amendment = new_amendment("term_extension", effective, "calloff_after_end", contract, initiator)
+            amendment["end_date_new"] = framework_extension_end(framework, state["end"], template)
+            state["end"] = amendment["end_date_new"]
+        if day > state["end"]:
+            continue
+        product = world.products[contract["product_id"]]
+        category, archetype = product["category_code"], product["archetype_code"]
+        system_id = world.stations[contract["destination_station_id"]]["system_id"]
+        if not scope_covers(entries, category, archetype, system_id, day):
+            if (category in spec.get("scope_archetypes", {})
+                    or scope_closed_for(entries, category, archetype, day)):
+                continue
+            effective = max(framework["start"], month_start(day))
+            last = state["last_addition"]
+            if last is not None and last["effective_date"] == effective:
+                last["items"].append((category, None))
+                entries.append(scope_entry(category, None, None, effective, amendment=last))
+            else:
+                last = new_amendment("product_addition", effective, "first_contract_of_category", contract,
+                                     buyer_id, [(category, None)])
+                state["last_addition"] = last
+                apply_scope_change(world, entries, last)
+        contract["framework_agreement_id"] = row["framework_agreement_id"]
+        if contract["status"] == "cancelled":
+            continue
+        state["cum"] += contract["total_value"]
+        if state["cum"] > FRAMEWORK_VOLUME_THRESHOLD * state["cap"]:
+            template = (volume_templates[counters["volume"]]
+                        if counters["volume"] < len(volume_templates) else None)
+            counters["volume"] += 1
+            before = state["cap"]
+            preferred = None
+            if template is not None and template.get("volume_after_mcr") is not None:
+                preferred = template["volume_after_mcr"] * 1_000_000.0
+            elif template is not None and template.get("delta_mcr") is not None:
+                preferred = before + template["delta_mcr"] * 1_000_000.0
+            generic = round_up(max(before * 1.5, state["cum"] / 0.75), granularity)
+            after = preferred if preferred is not None and preferred > state["cum"] else generic
+            effective = max(month_start(day), framework["start"], state["last_volume_effective"] + timedelta(days=1))
+            effective = min(effective, day)
+            proposed = (date.fromisoformat(template["proposed"]) if template is not None and template.get("proposed")
+                        and effective >= GAME_REFERENCE_DATE else None)
+            amendment = new_amendment("volume_increase", effective, "cumulative_over_90pct", contract,
+                                      buyer_id, proposed=proposed)
+            amendment["volume_before"], amendment["volume_after"] = before, after
+            state["cap"], state["last_volume_effective"] = after, effective
+    while pending:
+        amendment = pending.pop(0)
+        amendments.append(amendment)
+        apply(amendment)
+    write_framework_amendments(world, framework, amendments, entries, lookups)
+
+
+def write_framework_amendments(world: World, framework: dict[str, Any], amendments: list[dict[str, Any]],
+                               entries: list[dict[str, Any]], lookups: dict[str, Any]) -> None:
+    """Nummeriert die Nachträge chronologisch, schreibt Nachträge und Sortiment und aktualisiert den Rahmen."""
+    row = framework["row"]
+    language = framework["language"]
+    use_anchors = world.seed == BASELINE_SEED  # Bezüge auf konkrete Bestandsobjekte gelten nur für Seed 42
+    for amendment in amendments:
+        amendment_dates(amendment)
+    ordered = sorted(amendments, key=lambda a: (a["proposed_date"], a["effective_date"], a["order"]))
+    for number, amendment in enumerate(ordered, start=1):
+        a_spec = amendment["spec"]
+        trigger_contract = amendment.get("trigger_contract")
+        trigger_contract_id = trigger_contract["contract_id"] if trigger_contract else None
+        trigger_order_id = trigger_event_id = None
+        anchors: list[str] = []
+        if use_anchors and not amendment["rule"]:
+            contract_numbers = [n for n in a_spec.get("contracts", ()) if n in lookups["contracts"]]
+            order_numbers = [n for n in a_spec.get("orders", ()) if n in lookups["orders"]]
+            event_ids = [e for e in a_spec.get("events", ()) if e in lookups["events"]]
+            trigger_contract_id = lookups["contracts"][contract_numbers[0]] if contract_numbers else None
+            trigger_order_id = lookups["orders"][order_numbers[0]] if order_numbers else None
+            trigger_event_id = event_ids[0] if event_ids else None
+            anchors = contract_numbers + order_numbers + [
+                f"{'Ereignis' if language == 'de_DE' else 'event'} {e}" for e in event_ids]
+        items = amendment["items"]
+        categories = sorted({c for c, a in items if a is None})
+        archetypes = sorted({a for _c, a in items if a is not None})
+        volume_before = amendment.get("volume_before")
+        volume_after = amendment.get("volume_after")
+        record = world.add("framework_agreement_amendments", {
+            "framework_agreement_id": row["framework_agreement_id"],
+            "amendment_no": number,
+            "amendment_number": f"{row['agreement_number']}/{AMENDMENT_PREFIX[language]}{number}",
+            "amendment_type": amendment["amendment_type"],
+            "status": amendment["status"],
+            "rule": amendment["rule"],
+            "proposed_date": fmt_date(amendment["proposed_date"]),
+            "signed_date": fmt_date(amendment["signed_date"]) if amendment["signed_date"] else None,
+            "effective_date": fmt_date(amendment["effective_date"]),
+            "initiated_by_company_id": amendment["initiated_by_company_id"],
+            "volume_before": round(volume_before, 2) if volume_before is not None else None,
+            "volume_delta": round(volume_after - volume_before, 2) if volume_after is not None else None,
+            "volume_after": round(volume_after, 2) if volume_after is not None else None,
+            "price_change_pct": amendment.get("price_change_pct"),
+            "price_factor": amendment.get("price_factor"),
+            "end_date_new": fmt_date(amendment["end_date_new"]) if amendment.get("end_date_new") else None,
+            "category_code": categories[0] if len(categories) == 1 and not archetypes else None,
+            "archetype_code": archetypes[0] if len(archetypes) == 1 and not categories else None,
+            "exclusivity": amendment.get("exclusivity"),
+            "exclusive_system_id": amendment.get("exclusive_system_id"),
+            "escort_company_id": amendment.get("escort_company_id"),
+            "trigger_contract_id": trigger_contract_id,
+            "trigger_order_id": trigger_order_id,
+            "trigger_event_id": trigger_event_id,
+            "description": amendment_text(world, framework, amendment, trigger_contract, anchors),
+        })
+        amendment["amendment_id"] = record["amendment_id"]
+    for entry in entries:
+        world.add("framework_agreement_scope", {
+            "framework_agreement_id": row["framework_agreement_id"],
+            "category_code": entry["category_code"],
+            "archetype_code": entry["archetype_code"],
+            "system_id": entry["system_id"],
+            "entry_kind": entry["entry_kind"],
+            "exclusivity": entry["exclusivity"],
+            "valid_from": fmt_date(entry["valid_from"]),
+            "valid_to": fmt_date(entry["valid_to"]) if entry["valid_to"] else None,
+            "added_by_amendment_id": entry["added_by"]["amendment_id"] if entry["added_by"] else None,
+            "removed_by_amendment_id": entry["removed_by"]["amendment_id"] if entry["removed_by"] else None,
+        })
+    signed = [a for a in sorted(amendments, key=lambda a: (a["effective_date"], a["proposed_date"]))
+              if a["status"] == "signed"]
+    volumes = [a["volume_after"] for a in signed if a["amendment_type"] in ("volume_increase", "volume_reduction")]
+    ends = [a["end_date_new"] for a in signed if a["amendment_type"] == "term_extension" and a.get("end_date_new")]
+    current_end = max([framework["end"], *ends])
+    row["current_volume_cap"] = round(volumes[-1], 2) if volumes else row["base_volume"]
+    row["current_end_date"] = fmt_date(current_end)
+    if any(a["amendment_type"] == "suspension" and a["effective_date"] < GAME_REFERENCE_DATE for a in signed):
+        row["status"] = "suspended"
+    elif current_end < GAME_REFERENCE_DATE:
+        row["status"] = "expired"
+    elif framework["start"] > GAME_REFERENCE_DATE:
+        row["status"] = "negotiating"
+    else:
+        row["status"] = "active"
+
+
+def amendment_text(world: World, framework: dict[str, Any], amendment: dict[str, Any],
+                   trigger_contract: dict[str, Any] | None, anchors: list[str]) -> str:
+    """Beschreibender Nachtragstext in der Sprache des Verkäufers."""
+    language = framework["language"]
+    idx = lang_index(language)
+    names = []
+    for category, archetype in amendment["items"]:
+        if archetype is None:
+            names.append(CATEGORY_LABELS[category][idx])
+        else:
+            names.append(getattr(ARCHETYPES_BY_CODE[archetype], "name_de" if idx == 0 else "name_en"))
+    joiner = " und " if idx == 0 else " and "
+    items = joiner.join([", ".join(names[:-1]), names[-1]]) if len(names) > 1 else (names[0] if names else "")
+    if amendment["rule"] and trigger_contract is not None:
+        trigger = AMENDMENT_RULE_NOTES[amendment["rule"]][idx].format(contract=trigger_contract["contract_number"])
+    elif anchors:
+        trigger = AMENDMENT_RULE_NOTES["anchor"][idx].format(contract=", ".join(anchors))
+    else:
+        trigger = ""
+    system_id = amendment.get("exclusive_system_id")
+    system_name = world.systems_by_id[system_id]["name"] if system_id else ""
+    system_suffix = ((f" im System {system_name}" if idx == 0 else f" in the {system_name} system")
+                     if system_name else "")
+    station = amendment["spec"].get("station")
+    if station and items:
+        system_suffix += f" ({station})"
+    elif station:
+        items = f"die Station {station}" if idx == 0 else f"the station {station}"
+    escort_id = amendment.get("escort_company_id")
+    pct = amendment.get("price_change_pct")
+    return AMENDMENT_TEXTS[amendment["amendment_type"]][idx].format(
+        effective=fmt_human_date(amendment["effective_date"], language),
+        before=fmt_number(amendment.get("volume_before") or 0, language),
+        after=fmt_number(amendment.get("volume_after") or 0, language),
+        items=items or ("das gesamte Sortiment" if idx == 0 else "the entire scope"),
+        items_suffix=((" für " if idx == 0 else " for ") + items) if items else "",
+        pct=fmt_number(pct, language, 1) if pct is not None else "0",
+        end=fmt_human_date(amendment["end_date_new"], language) if amendment.get("end_date_new") else "",
+        exclusivity=EXCLUSIVITY_LABELS[amendment.get("exclusivity") or "right_of_first_refusal"][idx],
+        system_suffix=system_suffix,
+        escort=world.companies[escort_id]["name"] if escort_id else "",
+        trigger=trigger,
+    )
+
+
+SIGNATORY_ROLE_PRIORITY: dict[str, int] = {"executive": 0, "relations": 1, "finance": 2, "station_manager": 3}
+
+
+def assign_framework_signatories(world: World) -> None:
+    """Unterzeichner je Seite: am Unterzeichnungstag beschäftigt, bevorzugt Vorstand, dann Partnerbetreuung."""
+    employees_by_company: dict[int, list[dict[str, Any]]] = defaultdict(list)
+    for employee in world.rows["employees"]:
+        employees_by_company[employee["company_id"]].append(employee)
+    for framework in world.frameworks.values():
+        row = framework["row"]
+        signed = row["signed_date"]
+        for column, company_id in (("seller_signatory_id", framework["seller_id"]),
+                                   ("buyer_signatory_id", framework["buyer_id"])):
+            candidates = [e for e in employees_by_company[company_id] if e["hire_date"] <= signed
+                          and (e["termination_date"] is None or e["termination_date"] > signed)]
+            candidates.sort(key=lambda e: (SIGNATORY_ROLE_PRIORITY.get(e["role_code"], 9), e["hire_date"],
+                                           e["employee_id"]))
+            row[column] = candidates[0]["employee_id"] if candidates else None
+
+
+# ---------------------------------------------------------------------------
+# 6. Handelsrouten (inkl. Marktplanung: wer bietet an, wer fragt nach)
 # ---------------------------------------------------------------------------
 
 INTERNAL_DEMAND_WEIGHTS = {0: 0.30, 1: 0.45, 2: 0.25}
@@ -1507,109 +3349,142 @@ def supply_anchor_price(world: World, product: dict[str, Any]) -> float:
     return round(max(price, product["base_cost"] * 1.04), 2)
 
 
-def plan_markets(world: World) -> dict[int, list[int]]:
-    """Legt fest, welche Stationen welche Ware anbieten (supply) bzw. nachfragen (demand)."""
+def plan_company_markets(world: World, company_id: int, demand_by_product: dict[int, list[int]]) -> None:
+    """Legt für die Waren einer Firma Angebots- und Nachfragestationen fest (aktiver Zufallsstrom)."""
     rng = world.rng
+    company = world.companies[company_id]
+    buyer_ids = [buyer for (seller, buyer) in world.active_agreements if seller == company_id]
+    partner_stations = [s for buyer in buyer_ids for s in world.stations_by_company[buyer]]
+    for product in world.products_by_company[company_id]:
+        archetype = ARCHETYPES_BY_CODE[product["archetype_code"]]
+        supply = choose_supply_stations(world, company_id, product)
+        if not product["is_tradeable"]:
+            world.market[(supply[0]["station_id"], product["product_id"])] = {"role": "internal"}
+            continue
+        supply_ids = [s["station_id"] for s in supply]
+        world.supply_stations[product["product_id"]] = supply_ids
+        for sid in supply_ids:
+            world.market[(sid, product["product_id"])] = {"role": "supply"}
+        internal = [s for s in world.stations_by_company[company_id]
+                    if s["station_id"] not in supply_ids and s["station_type"] in archetype.consumers
+                    and can_trade_at(s, product)]
+        external = [s for s in partner_stations
+                    if s["station_type"] in archetype.consumers and can_trade_at(s, product)]
+        chosen = rng.sample(internal, pick_count(rng, len(internal), INTERNAL_DEMAND_WEIGHTS))
+        chosen += rng.sample(external, pick_count(rng, len(external),
+                                                  PARTNER_DEMAND_WEIGHTS[company["size_class"]]))
+        if not chosen and (internal or external):
+            chosen = [rng.choice(internal + external)]
+        demand_by_product[product["product_id"]].extend(s["station_id"] for s in chosen)
+
+
+def ensure_agreement_demand(world: World, seller_id: int, buyer_id: int,
+                            demand_by_product: dict[int, list[int]]) -> None:
+    """Jede gerichtete Vereinbarung braucht genug Routen für Verträge und Bestellungen."""
+    rng = world.rng
+    buyer_station_ids = {s["station_id"] for s in world.stations_by_company[buyer_id]}
+
+    def partner_pairs() -> int:
+        return sum(1 for p in world.products_by_company[seller_id]
+                   for sid in demand_by_product.get(p["product_id"], []) if sid in buyer_station_ids)
+
+    candidates = [p for p in world.products_by_company[seller_id] if p["is_tradeable"]]
+    rng.shuffle(candidates)
+    for product in candidates:
+        if partner_pairs() >= MIN_PARTNER_ROUTES_PER_AGREEMENT:
+            break
+        archetype = ARCHETYPES_BY_CODE[product["archetype_code"]]
+        options = [s for s in world.stations_by_company[buyer_id]
+                   if s["station_type"] in archetype.consumers and can_trade_at(s, product)
+                   and s["station_id"] not in demand_by_product[product["product_id"]]]
+        if options:
+            demand_by_product[product["product_id"]].append(rng.choice(options)["station_id"])
+    if partner_pairs() < 1:
+        raise RuntimeError(f"Keine Handelsroute für Vereinbarung {seller_id}->{buyer_id} möglich.")
+
+
+def plan_markets(world: World) -> dict[int, list[int]]:
+    """Legt fest, welche Stationen welche Ware anbieten (supply) bzw. nachfragen (demand).
+
+    Bestandsfirmen: erst alle Firmen, dann alle Vereinbarungen (bisherige Reihenfolge, gemeinsamer
+    Strom). Erweiterungsfirmen: je Firma Waren und eigene Vereinbarungen im eigenen Strom.
+    """
     demand_by_product: dict[int, list[int]] = defaultdict(list)
-    for company_id, company in world.companies.items():
-        buyer_ids = [buyer for (seller, buyer) in world.active_agreements if seller == company_id]
-        partner_stations = [s for buyer in buyer_ids for s in world.stations_by_company[buyer]]
-        for product in world.products_by_company[company_id]:
-            archetype = ARCHETYPES_BY_CODE[product["archetype_code"]]
-            supply = choose_supply_stations(world, company_id, product)
-            if not product["is_tradeable"]:
-                world.market[(supply[0]["station_id"], product["product_id"])] = {"role": "internal"}
-                continue
-            supply_ids = [s["station_id"] for s in supply]
-            world.supply_stations[product["product_id"]] = supply_ids
-            for sid in supply_ids:
-                world.market[(sid, product["product_id"])] = {"role": "supply"}
-            internal = [s for s in world.stations_by_company[company_id]
-                        if s["station_id"] not in supply_ids and s["station_type"] in archetype.consumers
-                        and can_trade_at(s, product)]
-            external = [s for s in partner_stations
-                        if s["station_type"] in archetype.consumers and can_trade_at(s, product)]
-            chosen = rng.sample(internal, pick_count(rng, len(internal), INTERNAL_DEMAND_WEIGHTS))
-            chosen += rng.sample(external, pick_count(rng, len(external),
-                                                      PARTNER_DEMAND_WEIGHTS[company["size_class"]]))
-            if not chosen and (internal or external):
-                chosen = [rng.choice(internal + external)]
-            demand_by_product[product["product_id"]].extend(s["station_id"] for s in chosen)
-
-    # Jede gerichtete Vereinbarung braucht genug Routen für Verträge und Bestellungen.
+    for company_id in world.legacy_company_ids():
+        plan_company_markets(world, company_id, demand_by_product)
     for seller_id, buyer_id in world.active_agreements:
-        buyer_station_ids = {s["station_id"] for s in world.stations_by_company[buyer_id]}
-
-        def partner_pairs() -> int:
-            return sum(1 for p in world.products_by_company[seller_id]
-                       for sid in demand_by_product.get(p["product_id"], []) if sid in buyer_station_ids)
-
-        candidates = [p for p in world.products_by_company[seller_id] if p["is_tradeable"]]
-        rng.shuffle(candidates)
-        for product in candidates:
-            if partner_pairs() >= MIN_PARTNER_ROUTES_PER_AGREEMENT:
-                break
-            archetype = ARCHETYPES_BY_CODE[product["archetype_code"]]
-            options = [s for s in world.stations_by_company[buyer_id]
-                       if s["station_type"] in archetype.consumers and can_trade_at(s, product)
-                       and s["station_id"] not in demand_by_product[product["product_id"]]]
-            if options:
-                demand_by_product[product["product_id"]].append(rng.choice(options)["station_id"])
-        if partner_pairs() < 1:
-            raise RuntimeError(f"Keine Handelsroute für Vereinbarung {seller_id}->{buyer_id} möglich.")
+        if world.is_legacy(seller_id):
+            ensure_agreement_demand(world, seller_id, buyer_id, demand_by_product)
+    for company_id in world.extension_company_ids():
+        with world.company_stream(world.key_of(company_id), "markets"):
+            plan_company_markets(world, company_id, demand_by_product)
+            for seller_id, buyer_id in world.active_agreements:
+                if seller_id == company_id:
+                    ensure_agreement_demand(world, seller_id, buyer_id, demand_by_product)
     return demand_by_product
+
+
+def build_product_routes(world: World, product_id: int, demand_ids: list[int]) -> None:
+    """Erzeugt die Routen einer Ware von ihren Erzeuger- zu den Verbraucherstationen (aktiver Strom)."""
+    rng = world.rng
+    product = world.products[product_id]
+    company_id = product["company_id"]
+    size = SIZE_PROFILES[world.companies[company_id]["size_class"]]
+    supply_ids = world.supply_stations[product_id]
+    for sid in supply_ids:
+        world.market[(sid, product_id)]["price"] = supply_anchor_price(world, product)
+    for demand_id in demand_ids:
+        destination = world.stations[demand_id]
+        world.market[(demand_id, product_id)] = {
+            "role": "demand", "price": demand_anchor_price(world, product, destination, supply_ids)}
+        ordered = sorted(supply_ids, key=lambda sid: euclidean_distance(world.stations[sid], destination))
+        origins = ordered[:1] + [sid for sid in ordered[1:] if rng.random() < 0.35]
+        for origin_id in origins:
+            origin = world.stations[origin_id]
+            distance = euclidean_distance(origin, destination)
+            price_origin = world.market[(origin_id, product_id)]["price"]
+            price_destination = world.market[(demand_id, product_id)]["price"]
+            by_volume = size.hold_capacity_m3 * rng.uniform(0.2, 0.5) / product["volume_m3"]
+            by_value = size.max_haul_value * rng.uniform(0.3, 1.0) / price_origin
+            typical = round_quantity(min(by_volume, by_value))
+            risk = route_risk_level(origin, destination, distance, product["legal_status"])
+            haul_fuel = fuel_cost(distance, typical * product["mass_kg"], typical * product["volume_m3"],
+                                  size.hold_capacity_m3)
+            insurance_rate = INSURANCE_RATE[risk] + (ILLEGAL_INSURANCE_SURCHARGE
+                                                     if product["legal_status"] == "illegal" else 0.0)
+            transport_per_unit = round((haul_fuel + typical * price_origin * insurance_rate) / typical, 2)
+            profit = round(price_destination - price_origin, 2)
+            route = world.add("trade_routes", {
+                "origin_station_id": origin_id,
+                "destination_station_id": demand_id,
+                "product_id": product_id,
+                "company_id": company_id,
+                "typical_quantity": typical,
+                "base_price_origin": price_origin,
+                "base_price_destination": price_destination,
+                "estimated_profit_per_unit": profit,
+                "travel_time_hours": travel_time_hours(distance),
+                "risk_level": risk,
+                "is_active": 0 if rng.random() < 0.06 else 1,
+                "distance_units": round(distance, 2),
+                "transport_cost_per_unit": transport_per_unit,
+                "net_profit_per_unit": round(profit - transport_per_unit, 2),
+                "route_scope": "internal" if destination["company_id"] == company_id else "partner",
+            })
+            world.routes_by_pair[(origin_id, demand_id)].append(route)
 
 
 def generate_trade_routes(world: World) -> None:
     """Erzeugt Handelsrouten von Erzeuger- zu Verbraucherstationen inklusive Preisanker und Risiko."""
-    rng = world.rng
     demand_by_product = plan_markets(world)
     for product_id, demand_ids in demand_by_product.items():
-        product = world.products[product_id]
-        company_id = product["company_id"]
-        size = SIZE_PROFILES[world.companies[company_id]["size_class"]]
-        supply_ids = world.supply_stations[product_id]
-        for sid in supply_ids:
-            world.market[(sid, product_id)]["price"] = supply_anchor_price(world, product)
-        for demand_id in demand_ids:
-            destination = world.stations[demand_id]
-            world.market[(demand_id, product_id)] = {
-                "role": "demand", "price": demand_anchor_price(world, product, destination, supply_ids)}
-            ordered = sorted(supply_ids, key=lambda sid: euclidean_distance(world.stations[sid], destination))
-            origins = ordered[:1] + [sid for sid in ordered[1:] if rng.random() < 0.35]
-            for origin_id in origins:
-                origin = world.stations[origin_id]
-                distance = euclidean_distance(origin, destination)
-                price_origin = world.market[(origin_id, product_id)]["price"]
-                price_destination = world.market[(demand_id, product_id)]["price"]
-                by_volume = size.hold_capacity_m3 * rng.uniform(0.2, 0.5) / product["volume_m3"]
-                by_value = size.max_haul_value * rng.uniform(0.3, 1.0) / price_origin
-                typical = round_quantity(min(by_volume, by_value))
-                risk = route_risk_level(origin, destination, distance, product["legal_status"])
-                haul_fuel = fuel_cost(distance, typical * product["mass_kg"], typical * product["volume_m3"],
-                                      size.hold_capacity_m3)
-                insurance_rate = INSURANCE_RATE[risk] + (ILLEGAL_INSURANCE_SURCHARGE
-                                                         if product["legal_status"] == "illegal" else 0.0)
-                transport_per_unit = round((haul_fuel + typical * price_origin * insurance_rate) / typical, 2)
-                profit = round(price_destination - price_origin, 2)
-                route = world.add("trade_routes", {
-                    "origin_station_id": origin_id,
-                    "destination_station_id": demand_id,
-                    "product_id": product_id,
-                    "company_id": company_id,
-                    "typical_quantity": typical,
-                    "base_price_origin": price_origin,
-                    "base_price_destination": price_destination,
-                    "estimated_profit_per_unit": profit,
-                    "travel_time_hours": travel_time_hours(distance),
-                    "risk_level": risk,
-                    "is_active": 0 if rng.random() < 0.06 else 1,
-                    "distance_units": round(distance, 2),
-                    "transport_cost_per_unit": transport_per_unit,
-                    "net_profit_per_unit": round(profit - transport_per_unit, 2),
-                    "route_scope": "internal" if destination["company_id"] == company_id else "partner",
-                })
-                world.routes_by_pair[(origin_id, demand_id)].append(route)
+        if world.is_legacy(world.products[product_id]["company_id"]):
+            build_product_routes(world, product_id, demand_ids)
+    for company_id in world.extension_company_ids():
+        with world.company_stream(world.key_of(company_id), "routes"):
+            for product_id, demand_ids in demand_by_product.items():
+                if world.products[product_id]["company_id"] == company_id:
+                    build_product_routes(world, product_id, demand_ids)
     ensure_active_partner_routes(world)
 
 
@@ -1624,20 +3499,36 @@ def ensure_active_partner_routes(world: World) -> None:
 
 
 # ---------------------------------------------------------------------------
-# 6. Lager
+# 7. Lager
 # ---------------------------------------------------------------------------
 
 
 def generate_inventory(world: World) -> None:
-    """Erzeugt Lagerbestände passend zu Marktrolle und typischen Routenmengen."""
-    rng = world.rng
+    """Erzeugt Lagerbestände passend zu Marktrolle und typischen Routenmengen.
+
+    Bestandsware (Ware einer Bestandsfirma) zuerst und im gemeinsamen Strom, danach die Ware jeder
+    Erweiterungsfirma in deren Strom – auch wenn sie an einer Bestandsstation nachgefragt wird.
+    """
     outgoing: dict[tuple[int, int], int] = defaultdict(int)
     incoming: dict[tuple[int, int], int] = defaultdict(int)
     for route in world.rows["trade_routes"]:
         outgoing[(route["origin_station_id"], route["product_id"])] += route["typical_quantity"]
         incoming[(route["destination_station_id"], route["product_id"])] += route["typical_quantity"]
+    entries = sorted(world.market.items())
+    owner = {key: world.products[key[1]]["company_id"] for key, _market in entries}
+    add_inventory_rows(world, [(key, market) for key, market in entries if world.is_legacy(owner[key])],
+                       outgoing, incoming)
+    for company_id in world.extension_company_ids():
+        with world.company_stream(world.key_of(company_id), "inventory"):
+            add_inventory_rows(world, [(key, market) for key, market in entries if owner[key] == company_id],
+                               outgoing, incoming)
 
-    for (station_id, product_id), market in sorted(world.market.items()):
+
+def add_inventory_rows(world: World, entries: list[tuple[tuple[int, int], dict[str, Any]]],
+                       outgoing: dict[tuple[int, int], int], incoming: dict[tuple[int, int], int]) -> None:
+    """Lagerzeilen für die übergebenen Station-Ware-Kombinationen (aktiver Zufallsstrom)."""
+    rng = world.rng
+    for (station_id, product_id), market in entries:
         product = world.products[product_id]
         role = market["role"]
         if role == "supply":
@@ -1668,7 +3559,7 @@ def generate_inventory(world: World) -> None:
 
 
 # ---------------------------------------------------------------------------
-# 7. Verträge
+# 8. Verträge
 # ---------------------------------------------------------------------------
 
 
@@ -1734,91 +3625,162 @@ def materialized_calloffs(plan: dict[str, Any]) -> list[dict[str, Any]]:
     return [c for c in plan["calloffs"] if c["order_dt"] < GAME_REFERENCE_DATETIME]
 
 
-def generate_contracts(world: World) -> None:
-    """Erzeugt Verträge entlang aktiver Vereinbarungen und plant deren Abrufbestellungen."""
+def contract_status(rng: random.Random, start: datetime, deadline: datetime) -> str:
+    """Vertragsstatus aus Lage von Beginn und Frist zum Stichtag."""
+    if start > GAME_REFERENCE_DATETIME:
+        return "draft"
+    if deadline < GAME_REFERENCE_DATETIME:
+        return weighted_choice(rng, {"completed": 0.80, "breached": 0.12, "cancelled": 0.08})
+    return "cancelled" if rng.random() < 0.07 else "active"
+
+
+def finish_contract_plan(world: World, plan: dict[str, Any], duration: int, count: int) -> dict[str, Any]:
+    """Ergänzt einen Vertragsplan um Abrufe, Storno- und Bruchtermine (aktiver Zufallsstrom)."""
     rng = world.rng
-    for company_id, company in world.companies.items():
-        language = company["language"]
-        profile = world.profiles[company_id]
-        buyers = [buyer for (seller, buyer) in world.active_agreements if seller == company_id]
-        routes_by_buyer = {buyer: partner_routes_of(world, company_id, buyer) for buyer in buyers}
-        buyers = [buyer for buyer in buyers if routes_by_buyer[buyer]]
-        window_start = to_datetime(world.window_start(company_id))
-        plans: list[dict[str, Any]] = []
-        for _ in range(world.targets[company_id]["contracts"]):
+    route = plan["route"]
+    plan["calloffs"] = plan_calloffs(world, plan["start"], duration, route["travel_time_hours"], count,
+                                     route["typical_quantity"])
+    if plan["status"] == "cancelled":
+        plan["cancelled_at"] = random_datetime(rng, plan["start"], min(plan["deadline"], GAME_REFERENCE_DATETIME))
+    if plan["status"] == "breached":
+        schedule_breached_calloff(plan, route["travel_time_hours"], rng)
+    return plan
+
+
+def plan_legacy_contracts(world: World, company_id: int, buyers: list[int],
+                          routes_by_buyer: dict[int, list[dict[str, Any]]]) -> list[dict[str, Any]]:
+    """Vertragspläne einer Bestandsfirma – unveränderte Zufallsfolge wie vor der Erweiterung."""
+    rng = world.rng
+    window_start = to_datetime(world.window_start(company_id))
+    plans: list[dict[str, Any]] = []
+    for _ in range(world.targets[company_id]["contracts"]):
+        buyer_id = rng.choice(buyers)
+        route = rng.choice(routes_by_buyer[buyer_id])
+        agreement = world.active_agreements[(company_id, buyer_id)]
+        type_weights = CONTRACT_TYPE_WEIGHTS_BY_AGREEMENT.get(agreement["relationship_type"],
+                                                              DEFAULT_CONTRACT_TYPE_WEIGHTS)
+        contract_type = weighted_choice(rng, type_weights)
+        spec = CONTRACT_TYPES[contract_type]
+        count = rng.randint(*spec["calloffs"])
+        travel_days = route["travel_time_hours"] / 24.0
+        duration = max(rng.randint(*spec["days"]), int(math.ceil(count * 7 + travel_days + 6)))
+        if rng.random() < 0.06:
+            start = random_datetime(rng, GAME_REFERENCE_DATETIME + timedelta(days=5),
+                                    GAME_REFERENCE_DATETIME + timedelta(days=75))
+        else:
+            start = random_datetime(rng, window_start, GAME_REFERENCE_DATETIME - timedelta(days=5))
+        deadline = start + timedelta(days=duration)
+        plan = {"route": route, "buyer_id": buyer_id, "contract_type": contract_type, "start": start,
+                "deadline": deadline, "status": contract_status(rng, start, deadline)}
+        plans.append(finish_contract_plan(world, plan, duration, count))
+    return plans
+
+
+def plan_extension_contracts(world: World, company_id: int, buyers: list[int],
+                             routes_by_buyer: dict[int, list[dict[str, Any]]]) -> list[dict[str, Any]]:
+    """Vertragspläne einer Erweiterungsfirma mit Rahmenregel und Exklusivitätssperren.
+
+    Vor Rahmenbeginn (und außerhalb von Laufzeit oder Sortiment eines Rahmens) schließt das Paar nur
+    Spot-, Not- und Kommissionsverträge; danach gelten die bisherigen Gewichte. Gesperrte Ware
+    (EXCLUSIVITY_FILTERS) wird gar nicht erst vertraglich gebunden.
+    """
+    rng = world.rng
+    window_start = to_datetime(world.window_start(company_id))
+    plans: list[dict[str, Any]] = []
+    for _ in range(world.targets[company_id]["contracts"]):
+        for _attempt in range(200):
             buyer_id = rng.choice(buyers)
             route = rng.choice(routes_by_buyer[buyer_id])
-            agreement = world.active_agreements[(company_id, buyer_id)]
-            type_weights = CONTRACT_TYPE_WEIGHTS_BY_AGREEMENT.get(agreement["relationship_type"],
-                                                                  DEFAULT_CONTRACT_TYPE_WEIGHTS)
-            contract_type = weighted_choice(rng, type_weights)
-            spec = CONTRACT_TYPES[contract_type]
-            count = rng.randint(*spec["calloffs"])
-            travel_days = route["travel_time_hours"] / 24.0
-            duration = max(rng.randint(*spec["days"]), int(math.ceil(count * 7 + travel_days + 6)))
             if rng.random() < 0.06:
                 start = random_datetime(rng, GAME_REFERENCE_DATETIME + timedelta(days=5),
                                         GAME_REFERENCE_DATETIME + timedelta(days=75))
             else:
                 start = random_datetime(rng, window_start, GAME_REFERENCE_DATETIME - timedelta(days=5))
-            deadline = start + timedelta(days=duration)
-            if start > GAME_REFERENCE_DATETIME:
-                status = "draft"
-            elif deadline < GAME_REFERENCE_DATETIME:
-                status = weighted_choice(rng, {"completed": 0.80, "breached": 0.12, "cancelled": 0.08})
-            else:
-                status = "cancelled" if rng.random() < 0.07 else "active"
-            plan = {
-                "route": route, "buyer_id": buyer_id, "contract_type": contract_type, "start": start,
-                "deadline": deadline, "status": status,
-                "calloffs": plan_calloffs(world, start, duration, route["travel_time_hours"], count,
-                                          route["typical_quantity"]),
-            }
-            if status == "cancelled":
-                plan["cancelled_at"] = random_datetime(rng, start, min(deadline, GAME_REFERENCE_DATETIME))
-            if status == "breached":
-                schedule_breached_calloff(plan, route["travel_time_hours"], rng)
-            plans.append(plan)
-
-        # Abrufbestellungen dürfen höchstens 55 % des Bestellvolumens ausmachen.
-        budget = int(world.targets[company_id]["orders"] * 0.55)
-        while sum(len(materialized_calloffs(p)) for p in plans) > budget:
-            reducible = [p for p in plans if len(materialized_calloffs(p)) > 1]
-            if not reducible:
+            if not exclusivity_blocks(world, company_id, buyer_id, world.products[route["product_id"]],
+                                      world.stations[route["destination_station_id"]], start.date()):
                 break
-            victim = rng.choice(reducible)
-            victim["calloffs"].remove(materialized_calloffs(victim)[-1])
-            if victim["status"] == "breached":
-                schedule_breached_calloff(victim, victim["route"]["travel_time_hours"], rng)
+        else:
+            raise RuntimeError(f"Keine zulässige Vertragsware für Firma {company_id} gefunden.")
+        agreement = world.active_agreements[(company_id, buyer_id)]
+        type_weights = dict(CONTRACT_TYPE_WEIGHTS_BY_AGREEMENT.get(agreement["relationship_type"],
+                                                                   DEFAULT_CONTRACT_TYPE_WEIGHTS))
+        framework = world.frameworks.get((company_id, buyer_id))
+        if framework is not None and not planned_framework_covers(world, framework, route, start.date()):
+            type_weights = {code: weight for code, weight in type_weights.items()
+                            if code in OUTSIDE_FRAMEWORK_CONTRACT_TYPES} or {"spot": 1.0}
+        contract_type = weighted_choice(rng, type_weights)
+        spec = CONTRACT_TYPES[contract_type]
+        count = rng.randint(*spec["calloffs"])
+        travel_days = route["travel_time_hours"] / 24.0
+        duration = max(rng.randint(*spec["days"]), int(math.ceil(count * 7 + travel_days + 6)))
+        deadline = start + timedelta(days=duration)
+        plan = {"route": route, "buyer_id": buyer_id, "contract_type": contract_type, "start": start,
+                "deadline": deadline, "status": contract_status(rng, start, deadline)}
+        plans.append(finish_contract_plan(world, plan, duration, count))
+    return plans
 
-        for sequence, plan in enumerate(sorted(plans, key=lambda p: p["start"]), start=1):
-            route = plan["route"]
-            product = world.products[route["product_id"]]
-            quantity = sum(c["quantity"] for c in plan["calloffs"])
-            price = route["base_price_destination"] * rng.uniform(0.86, 0.97)
-            price = round(max(price, route["base_price_origin"] * 1.03, product["base_cost"] * 1.05), 2)
-            total_value = round(quantity * price, 2)
-            penalty = round(total_value * rng.uniform(0.002, 0.01), 2)
-            row = world.add("contracts", {
-                "contract_number": f"{profile.sku_prefix}-{CONTRACT_PREFIX[language]}-{plan['start'].year}-{sequence:04d}",
-                "company_id": company_id,
-                "partner_company_id": plan["buyer_id"],
-                "origin_station_id": route["origin_station_id"],
-                "destination_station_id": route["destination_station_id"],
-                "product_id": route["product_id"],
-                "route_id": route["route_id"],
-                "contract_type": plan["contract_type"],
-                "quantity": quantity,
-                "agreed_price_per_unit": price,
-                "total_value": total_value,
-                "start_date": fmt_date(plan["start"]),
-                "deadline": fmt_date(plan["deadline"]),
-                "status": plan["status"],
-                "penalty_per_day": penalty,
-                "description": contract_description(world, company_id, plan["contract_type"], route, quantity,
-                                                    price, penalty, plan["deadline"].date()),
-            })
-            world.contract_plans[row["contract_id"]] = plan
+
+def generate_company_contracts(world: World, company_id: int) -> None:
+    """Verträge einer Firma im aktiven Zufallsstrom samt Abrufplanung."""
+    rng = world.rng
+    company = world.companies[company_id]
+    language = company["language"]
+    profile = world.profiles[company_id]
+    buyers = [buyer for (seller, buyer) in world.active_agreements if seller == company_id]
+    routes_by_buyer = {buyer: partner_routes_of(world, company_id, buyer) for buyer in buyers}
+    buyers = [buyer for buyer in buyers if routes_by_buyer[buyer]]
+    if world.is_legacy(company_id):
+        plans = plan_legacy_contracts(world, company_id, buyers, routes_by_buyer)
+    else:
+        plans = plan_extension_contracts(world, company_id, buyers, routes_by_buyer)
+
+    # Abrufbestellungen dürfen höchstens 55 % des Bestellvolumens ausmachen.
+    budget = int(world.targets[company_id]["orders"] * 0.55)
+    while sum(len(materialized_calloffs(p)) for p in plans) > budget:
+        reducible = [p for p in plans if len(materialized_calloffs(p)) > 1]
+        if not reducible:
+            break
+        victim = rng.choice(reducible)
+        victim["calloffs"].remove(materialized_calloffs(victim)[-1])
+        if victim["status"] == "breached":
+            schedule_breached_calloff(victim, victim["route"]["travel_time_hours"], rng)
+
+    for sequence, plan in enumerate(sorted(plans, key=lambda p: p["start"]), start=1):
+        route = plan["route"]
+        product = world.products[route["product_id"]]
+        quantity = sum(c["quantity"] for c in plan["calloffs"])
+        price = route["base_price_destination"] * rng.uniform(0.86, 0.97)
+        price = round(max(price, route["base_price_origin"] * 1.03, product["base_cost"] * 1.05), 2)
+        total_value = round(quantity * price, 2)
+        penalty = round(total_value * rng.uniform(0.002, 0.01), 2)
+        row = world.add("contracts", {
+            "contract_number": f"{profile.sku_prefix}-{CONTRACT_PREFIX[language]}-{plan['start'].year}-{sequence:04d}",
+            "company_id": company_id,
+            "partner_company_id": plan["buyer_id"],
+            "origin_station_id": route["origin_station_id"],
+            "destination_station_id": route["destination_station_id"],
+            "product_id": route["product_id"],
+            "route_id": route["route_id"],
+            "contract_type": plan["contract_type"],
+            "quantity": quantity,
+            "agreed_price_per_unit": price,
+            "total_value": total_value,
+            "start_date": fmt_date(plan["start"]),
+            "deadline": fmt_date(plan["deadline"]),
+            "status": plan["status"],
+            "penalty_per_day": penalty,
+            "description": contract_description(world, company_id, plan["contract_type"], route, quantity,
+                                                price, penalty, plan["deadline"].date()),
+            "framework_agreement_id": None,  # Zuordnung im letzten Schritt (Rahmenverträge)
+        })
+        world.contract_plans[row["contract_id"]] = plan
+
+
+def generate_contracts(world: World) -> None:
+    """Erzeugt Verträge entlang aktiver Vereinbarungen und plant deren Abrufbestellungen."""
+    for company_id in world.companies:
+        with world.company_stream(world.key_of(company_id), "contracts"):
+            generate_company_contracts(world, company_id)
 
     # Vertragsvolumen der Partnerschaften = Summe der (nicht stornierten) Verträge in dieser Richtung
     volumes: dict[tuple[int, int], float] = defaultdict(float)
@@ -1830,61 +3792,68 @@ def generate_contracts(world: World) -> None:
 
 
 # ---------------------------------------------------------------------------
-# 8. Kunden, Bestellungen und Bestellpositionen
+# 9. Kunden, Bestellungen und Bestellpositionen
 # ---------------------------------------------------------------------------
 
 
 def generate_customers(world: World) -> None:
     """Erzeugt Kundenkonten: Partnerfirmen und fiktive Kolonien, Händler und Stationsbetreiber."""
+    for company_id in world.companies:
+        with world.company_stream(world.key_of(company_id), "customers"):
+            generate_company_customers(world, company_id)
+
+
+def generate_company_customers(world: World, company_id: int) -> None:
+    """Kundenkonten einer Firma im aktiven Zufallsstrom."""
     rng = world.rng
-    for company_id, company in world.companies.items():
-        language = company["language"]
-        fake = world.fake(company_id)
-        size = SIZE_PROFILES[company["size_class"]]
-        used_names: set[str] = set()
-        window_start = world.window_start(company_id)
-        active_routes = [r for r in world.rows["trade_routes"] if r["company_id"] == company_id and r["is_active"]]
+    company = world.companies[company_id]
+    language = company["language"]
+    fake = world.fake(company_id)
+    size = SIZE_PROFILES[company["size_class"]]
+    used_names: set[str] = set()
+    window_start = world.window_start(company_id)
+    active_routes = [r for r in world.rows["trade_routes"] if r["company_id"] == company_id and r["is_active"]]
 
-        for (seller_id, buyer_id), agreement in world.active_agreements.items():
-            if seller_id != company_id:
-                continue
-            buyer_routes = [r for r in active_routes
-                            if world.stations[r["destination_station_id"]]["company_id"] == buyer_id]
-            if not buyer_routes:
-                continue
-            home = max({r["destination_station_id"] for r in buyer_routes},
-                       key=lambda sid: sum(1 for r in buyer_routes if r["destination_station_id"] == sid))
-            name = world.companies[buyer_id]["name"]
-            used_names.add(name)
-            row = world.add("customers", {
-                "company_id": company_id, "linked_company_id": buyer_id, "name": name,
-                "customer_type": "corporate_partner", "home_station_id": home,
-                "contact_name": person_name(world.fake(buyer_id)),
-                "credit_limit": round(rng.uniform(*CUSTOMER_CREDIT_LIMIT["corporate_partner"]) * size.storage_factor, -3),
-                "since_date": agreement["start_date"], "is_active": 1,
-            })
-            world.customers_by_company[company_id].append(row)
+    for (seller_id, buyer_id), agreement in world.active_agreements.items():
+        if seller_id != company_id:
+            continue
+        buyer_routes = [r for r in active_routes
+                        if world.stations[r["destination_station_id"]]["company_id"] == buyer_id]
+        if not buyer_routes:
+            continue
+        home = max({r["destination_station_id"] for r in buyer_routes},
+                   key=lambda sid: sum(1 for r in buyer_routes if r["destination_station_id"] == sid))
+        name = world.companies[buyer_id]["name"]
+        used_names.add(name)
+        row = world.add("customers", {
+            "company_id": company_id, "linked_company_id": buyer_id, "name": name,
+            "customer_type": "corporate_partner", "home_station_id": home,
+            "contact_name": person_name(world.fake(buyer_id)),
+            "credit_limit": round(rng.uniform(*CUSTOMER_CREDIT_LIMIT["corporate_partner"]) * size.storage_factor, -3),
+            "since_date": agreement["start_date"], "is_active": 1,
+        })
+        world.customers_by_company[company_id].append(row)
 
-        destination_weights: dict[int, float] = defaultdict(float)
-        for route in active_routes:
-            destination_weights[route["destination_station_id"]] += 1.0
-        npc_count = world.targets[company_id]["customers"] - len(world.customers_by_company[company_id])
-        for _ in range(npc_count):
-            home_id = weighted_choice(rng, destination_weights)
-            customer_type = rng.choice(CUSTOMER_TYPE_BY_STATION[world.stations[home_id]["station_type"]])
-            template = CUSTOMER_NAME_TEMPLATES[language][customer_type]
+    destination_weights: dict[int, float] = defaultdict(float)
+    for route in active_routes:
+        destination_weights[route["destination_station_id"]] += 1.0
+    npc_count = world.targets[company_id]["customers"] - len(world.customers_by_company[company_id])
+    for _ in range(npc_count):
+        home_id = weighted_choice(rng, destination_weights)
+        customer_type = rng.choice(CUSTOMER_TYPE_BY_STATION[world.stations[home_id]["station_type"]])
+        template = CUSTOMER_NAME_TEMPLATES[language][customer_type]
+        name = template.format(first=fake.first_name(), last=fake.last_name())
+        while name in used_names:
             name = template.format(first=fake.first_name(), last=fake.last_name())
-            while name in used_names:
-                name = template.format(first=fake.first_name(), last=fake.last_name())
-            used_names.add(name)
-            since = random_date(rng, window_start - timedelta(days=5 * 365), GAME_REFERENCE_DATE - timedelta(days=60))
-            row = world.add("customers", {
-                "company_id": company_id, "linked_company_id": None, "name": name,
-                "customer_type": customer_type, "home_station_id": home_id, "contact_name": person_name(fake),
-                "credit_limit": round(rng.uniform(*CUSTOMER_CREDIT_LIMIT[customer_type]), -3),
-                "since_date": fmt_date(since), "is_active": 0 if rng.random() < 0.05 else 1,
-            })
-            world.customers_by_company[company_id].append(row)
+        used_names.add(name)
+        since = random_date(rng, window_start - timedelta(days=5 * 365), GAME_REFERENCE_DATE - timedelta(days=60))
+        row = world.add("customers", {
+            "company_id": company_id, "linked_company_id": None, "name": name,
+            "customer_type": customer_type, "home_station_id": home_id, "contact_name": person_name(fake),
+            "credit_limit": round(rng.uniform(*CUSTOMER_CREDIT_LIMIT[customer_type]), -3),
+            "since_date": fmt_date(since), "is_active": 0 if rng.random() < 0.05 else 1,
+        })
+        world.customers_by_company[company_id].append(row)
 
 
 def simulate_order_timeline(rng: random.Random, order_dt: datetime, travel_hours: float, risk: str,
@@ -2023,117 +3992,186 @@ def spot_unit_price(world: World, route: dict[str, Any], is_partner: bool) -> fl
 
 def generate_orders(world: World) -> None:
     """Erzeugt Vertragsabrufe und Spot-Bestellungen entlang aktiver Routen."""
-    rng = world.rng
     generate_customers(world)
     contracts_by_company: dict[int, list[dict[str, Any]]] = defaultdict(list)
     for contract in world.rows["contracts"]:
         contracts_by_company[contract["company_id"]].append(contract)
-
+    routes_by_id = {r["route_id"]: r for r in world.rows["trade_routes"]}
     for company_id in world.companies:
-        pending_orders: list[dict[str, Any]] = []
-        partner_customers = {c["linked_company_id"]: c for c in world.customers_by_company[company_id]
-                             if c["linked_company_id"] is not None}
-        routes_by_id = {r["route_id"]: r for r in world.rows["trade_routes"]}
-        for contract in contracts_by_company[company_id]:
-            plan = world.contract_plans[contract["contract_id"]]
-            done = materialized_calloffs(plan)
-            for index, calloff in enumerate(done, start=1):
-                late = plan["deadline"] if plan["status"] == "breached" and index == len(done) else None
-                pending_orders.append({
-                    "order_dt": calloff["order_dt"], "customer": partner_customers[contract["partner_company_id"]],
-                    "lines": [(routes_by_id[contract["route_id"]], calloff["quantity"],
-                               contract["agreed_price_per_unit"])],
-                    "contract": contract, "calloff_index": index, "calloff_total": len(plan["calloffs"]),
-                    "force_late_after": late, "allow_cancel": False,
-                    "allow_delay": plan["status"] not in ("completed", "breached"),
-                })
-
-        active_routes = [r for r in world.rows["trade_routes"] if r["company_id"] == company_id and r["is_active"]]
-        pairs: dict[tuple[int, int], list[dict[str, Any]]] = defaultdict(list)
-        for route in active_routes:
-            pairs[(route["origin_station_id"], route["destination_station_id"])].append(route)
-        pairs_into: dict[int, list[tuple[int, int]]] = defaultdict(list)
-        for pair in pairs:
-            pairs_into[pair[1]].append(pair)
-        npc_customers = [c for c in world.customers_by_company[company_id]
-                         if c["linked_company_id"] is None and pairs_into[c["home_station_id"]]]
-        window_start = to_datetime(world.window_start(company_id))
-        size = SIZE_PROFILES[world.companies[company_id]["size_class"]]
-
-        spot_count = max(0, world.targets[company_id]["orders"] - len(pending_orders))
-        for _ in range(spot_count):
-            if partner_customers and rng.random() < 0.3:
-                customer = rng.choice(list(partner_customers.values()))
-                buyer_stations = {s["station_id"] for s in world.stations_by_company[customer["linked_company_id"]]}
-                candidate_pairs = [pair for pair in pairs if pair[1] in buyer_stations]
-            else:
-                customer = rng.choice(npc_customers)
-                candidate_pairs = pairs_into[customer["home_station_id"]]
-            pair = rng.choice(candidate_pairs)
-            routes = pairs[pair]
-            line_count = pick_count(rng, len(routes), {1: 0.45, 2: 0.30, 3: 0.15, 4: 0.10})
-            is_partner = customer["linked_company_id"] is not None
-            lines = [(route, max(1, round_quantity(route["typical_quantity"] * rng.uniform(*size.order_share))),
-                      spot_unit_price(world, route, is_partner))
-                     for route in rng.sample(routes, line_count)]
-            earliest = max(window_start, to_datetime(date.fromisoformat(customer["since_date"])))
-            if rng.random() < 0.07:
-                earliest = max(earliest, GAME_REFERENCE_DATETIME - timedelta(days=21))
-            order_dt = random_datetime(rng, earliest, GAME_REFERENCE_DATETIME - timedelta(hours=1))
-            pending_orders.append({"order_dt": order_dt, "customer": customer, "lines": lines, "contract": None,
-                                   "calloff_index": 0, "calloff_total": 0, "force_late_after": None,
-                                   "allow_cancel": True, "allow_delay": True})
-
-        for sequence, spec in enumerate(sorted(pending_orders, key=lambda o: o["order_dt"]), start=1):
-            build_order(world, company_id, spec["customer"], spec["lines"], spec["order_dt"], sequence,
-                        contract=spec["contract"], calloff_index=spec["calloff_index"],
-                        calloff_total=spec["calloff_total"], force_late_after=spec["force_late_after"],
-                        allow_cancel=spec["allow_cancel"], allow_delay=spec["allow_delay"])
-
+        with world.company_stream(world.key_of(company_id), "orders"):
+            generate_company_orders(world, company_id, contracts_by_company[company_id], routes_by_id)
     book_inventory_reservations(world)
     finalize_station_capacity(world)
 
 
-def book_inventory_reservations(world: World) -> None:
-    """Reserviert Lagerware für noch nicht abgeflogene Bestellungen (pending/confirmed)."""
+def generate_company_orders(world: World, company_id: int, contracts: list[dict[str, Any]],
+                            routes_by_id: dict[int, dict[str, Any]]) -> None:
+    """Abrufe und Spot-Bestellungen einer Firma im aktiven Zufallsstrom.
+
+    Erweiterungsfirmen beachten die Exklusivitätssperren: gesperrte Positionen werden neu gezogen.
+    """
     rng = world.rng
+    legacy = world.is_legacy(company_id)
+    pending_orders: list[dict[str, Any]] = []
+    partner_customers = {c["linked_company_id"]: c for c in world.customers_by_company[company_id]
+                         if c["linked_company_id"] is not None}
+    for contract in contracts:
+        plan = world.contract_plans[contract["contract_id"]]
+        done = materialized_calloffs(plan)
+        for index, calloff in enumerate(done, start=1):
+            late = plan["deadline"] if plan["status"] == "breached" and index == len(done) else None
+            pending_orders.append({
+                "order_dt": calloff["order_dt"], "customer": partner_customers[contract["partner_company_id"]],
+                "lines": [(routes_by_id[contract["route_id"]], calloff["quantity"],
+                           contract["agreed_price_per_unit"])],
+                "contract": contract, "calloff_index": index, "calloff_total": len(plan["calloffs"]),
+                "force_late_after": late, "allow_cancel": False,
+                "allow_delay": plan["status"] not in ("completed", "breached"),
+            })
+
+    active_routes = [r for r in world.rows["trade_routes"] if r["company_id"] == company_id and r["is_active"]]
+    pairs: dict[tuple[int, int], list[dict[str, Any]]] = defaultdict(list)
+    for route in active_routes:
+        pairs[(route["origin_station_id"], route["destination_station_id"])].append(route)
+    pairs_into: dict[int, list[tuple[int, int]]] = defaultdict(list)
+    for pair in pairs:
+        pairs_into[pair[1]].append(pair)
+    npc_customers = [c for c in world.customers_by_company[company_id]
+                     if c["linked_company_id"] is None and pairs_into[c["home_station_id"]]]
+    window_start = to_datetime(world.window_start(company_id))
+    size = SIZE_PROFILES[world.companies[company_id]["size_class"]]
+
+    def draw_spot_order() -> dict[str, Any]:
+        if partner_customers and rng.random() < 0.3:
+            customer = rng.choice(list(partner_customers.values()))
+            buyer_stations = {s["station_id"] for s in world.stations_by_company[customer["linked_company_id"]]}
+            candidate_pairs = [pair for pair in pairs if pair[1] in buyer_stations]
+        else:
+            customer = rng.choice(npc_customers)
+            candidate_pairs = pairs_into[customer["home_station_id"]]
+        pair = rng.choice(candidate_pairs)
+        routes = pairs[pair]
+        line_count = pick_count(rng, len(routes), {1: 0.45, 2: 0.30, 3: 0.15, 4: 0.10})
+        is_partner = customer["linked_company_id"] is not None
+        lines = [(route, max(1, round_quantity(route["typical_quantity"] * rng.uniform(*size.order_share))),
+                  spot_unit_price(world, route, is_partner))
+                 for route in rng.sample(routes, line_count)]
+        earliest = max(window_start, to_datetime(date.fromisoformat(customer["since_date"])))
+        if rng.random() < 0.07:
+            earliest = max(earliest, GAME_REFERENCE_DATETIME - timedelta(days=21))
+        order_dt = random_datetime(rng, earliest, GAME_REFERENCE_DATETIME - timedelta(hours=1))
+        return {"order_dt": order_dt, "customer": customer, "lines": lines, "contract": None,
+                "calloff_index": 0, "calloff_total": 0, "force_late_after": None,
+                "allow_cancel": True, "allow_delay": True}
+
+    spot_count = max(0, world.targets[company_id]["orders"] - len(pending_orders))
+    for _ in range(spot_count):
+        spec = draw_spot_order()
+        if not legacy:
+            for _attempt in range(100):
+                buyer_id = spec["customer"]["linked_company_id"]
+                allowed = [line for line in spec["lines"] if not exclusivity_blocks(
+                    world, company_id, buyer_id, world.products[line[0]["product_id"]],
+                    world.stations[line[0]["destination_station_id"]], spec["order_dt"].date())]
+                if allowed:
+                    spec["lines"] = allowed
+                    break
+                spec = draw_spot_order()
+            else:
+                raise RuntimeError(f"Keine zulässige Spot-Bestellung für Firma {company_id} gefunden.")
+        pending_orders.append(spec)
+
+    for sequence, spec in enumerate(sorted(pending_orders, key=lambda o: o["order_dt"]), start=1):
+        build_order(world, company_id, spec["customer"], spec["lines"], spec["order_dt"], sequence,
+                    contract=spec["contract"], calloff_index=spec["calloff_index"],
+                    calloff_total=spec["calloff_total"], force_late_after=spec["force_late_after"],
+                    allow_cancel=spec["allow_cancel"], allow_delay=spec["allow_delay"])
+
+
+def book_inventory_reservations(world: World) -> None:
+    """Reserviert Lagerware für noch nicht abgeflogene Bestellungen (pending/confirmed).
+
+    Bestandsware im gemeinsamen Strom, Ware der Erweiterungsfirmen im Strom des Anbieters.
+    """
     reserved: dict[tuple[int, int], int] = defaultdict(int)
     orders = {o["order_id"]: o for o in world.rows["orders"]}
     for item in world.rows["order_items"]:
         order = orders[item["order_id"]]
         if order["status"] in ("pending", "confirmed"):
             reserved[(order["origin_station_id"], item["product_id"])] += item["quantity"]
-    for key, quantity in reserved.items():
+    owner = {key: world.products[key[1]]["company_id"] for key in reserved}
+    apply_reservations(world, [(key, qty) for key, qty in reserved.items() if world.is_legacy(owner[key])])
+    for company_id in world.extension_company_ids():
+        with world.company_stream(world.key_of(company_id), "reservations"):
+            apply_reservations(world, [(key, qty) for key, qty in reserved.items() if owner[key] == company_id])
+
+
+def apply_reservations(world: World, reserved: list[tuple[tuple[int, int], int]]) -> None:
+    """Bucht Reservierungen und stockt knappe Lager auf (aktiver Zufallsstrom)."""
+    rng = world.rng
+    for key, quantity in reserved:
         inventory = world.inventory[key]
         inventory["reserved_quantity"] = quantity
         if inventory["quantity"] < quantity:
             inventory["quantity"] = quantity + int(inventory["restock_target"] * rng.uniform(0.05, 0.3))
 
 
+def station_capacity(world: World, station: dict[str, Any], used: float) -> float:
+    """Lagerkapazität: Nennkapazität oder belegtes Volumen mit Reserve (aktiver Zufallsstrom)."""
+    size = SIZE_PROFILES[world.companies[station["company_id"]]["size_class"]]
+    nominal = STATION_TYPES[station["station_type"]].base_storage_m3 * size.storage_factor
+    return float(round(max(nominal, used * world.rng.uniform(1.3, 1.8)), -2))
+
+
 def finalize_station_capacity(world: World) -> None:
-    """Setzt die Lagerkapazität jeder Station über das tatsächlich belegte Volumen."""
-    rng = world.rng
-    used: dict[int, float] = defaultdict(float)
+    """Setzt die Lagerkapazität jeder Station über das tatsächlich belegte Volumen.
+
+    Bestandsstationen werden zuerst nur mit Bestandsware bemessen (gemeinsamer Strom, Werte wie vor der
+    Erweiterung). Reicht die Kapazität für zusätzliche Ware neuer Lieferanten nicht, wird sie im Strom
+    der Erweiterung aufgestockt.
+    """
+    used_legacy: dict[int, float] = defaultdict(float)
+    used_all: dict[int, float] = defaultdict(float)
     for inventory in world.rows["inventory"]:
-        used[inventory["station_id"]] += inventory["quantity"] * world.products[inventory["product_id"]]["volume_m3"]
+        product = world.products[inventory["product_id"]]
+        volume = inventory["quantity"] * product["volume_m3"]
+        used_all[inventory["station_id"]] += volume
+        if world.is_legacy(product["company_id"]):
+            used_legacy[inventory["station_id"]] += volume
     for station in world.rows["stations"]:
-        size = SIZE_PROFILES[world.companies[station["company_id"]]["size_class"]]
-        nominal = STATION_TYPES[station["station_type"]].base_storage_m3 * size.storage_factor
-        station["storage_capacity_m3"] = float(round(max(nominal, used[station["station_id"]] * rng.uniform(1.3, 1.8)), -2))
+        if world.is_legacy(station["company_id"]):
+            station["storage_capacity_m3"] = station_capacity(world, station, used_legacy[station["station_id"]])
+    with world.company_stream("extension", "capacity_topup"):
+        for station in world.rows["stations"]:
+            used = used_all[station["station_id"]]
+            if world.is_legacy(station["company_id"]) and used > station["storage_capacity_m3"]:
+                station["storage_capacity_m3"] = station_capacity(world, station, used)
+    for company_id in world.extension_company_ids():
+        with world.company_stream(world.key_of(company_id), "capacity"):
+            for station in world.stations_by_company[company_id]:
+                station["storage_capacity_m3"] = station_capacity(world, station, used_all[station["station_id"]])
 
 
 # ---------------------------------------------------------------------------
-# 9. Lieferungen
+# 10. Lieferungen
 # ---------------------------------------------------------------------------
 
 
 def generate_shipments(world: World) -> None:
     """Erzeugt je bestätigter Bestellung eine Lieferung mit Reisezeit passend zur Distanz."""
-    rng = world.rng
     counters: dict[int, int] = defaultdict(int)
+    add_shipments(world, [o for o in world.rows["orders"] if world.is_legacy(o["company_id"])], counters)
+    for company_id in world.extension_company_ids():
+        with world.company_stream(world.key_of(company_id), "shipments"):
+            add_shipments(world, [o for o in world.rows["orders"] if o["company_id"] == company_id], counters)
+
+
+def add_shipments(world: World, orders: list[dict[str, Any]], counters: dict[int, int]) -> None:
+    """Lieferungen für die übergebenen Bestellungen (aktiver Zufallsstrom)."""
+    rng = world.rng
     shipment_status = {"confirmed": "pending", "in_transit": "in_transit", "delayed": "delayed",
                        "delivered": "delivered"}
-    for order in world.rows["orders"]:
+    for order in orders:
         if order["status"] not in shipment_status:
             continue
         timeline = world.order_timelines[order["order_id"]]
@@ -2161,7 +4199,7 @@ def generate_shipments(world: World) -> None:
 
 
 # ---------------------------------------------------------------------------
-# 10. Preisverläufe (inkl. Planung der Marktereignisse, die die Kurven prägen)
+# 11. Preisverläufe (inkl. Planung der Marktereignisse, die die Kurven prägen)
 # ---------------------------------------------------------------------------
 
 
@@ -2188,14 +4226,34 @@ def price_impact(supply_impact: float, demand_impact: float) -> float:
 
 
 def plan_market_events(world: World) -> None:
-    """Plant lokale Marktereignisse (ein System, max. drei Stationen) als Schocks für die Preiskurven."""
+    """Plant lokale Marktereignisse (ein System, max. drei Stationen) als Schocks für die Preiskurven.
+
+    Bestand: Ereignisse an Bestandsstationen wirken nur auf Bestandsware und Bestandsnachbarn
+    (gemeinsamer Strom, unverändert). Erweiterung: Ereignisse an neuen Stationen (Strom der Firma)
+    wirken nur auf Ware der Erweiterungsfirmen, auch an Bestandsstationen im selben System.
+    """
+    legacy_inventory = [inv for inv in world.rows["inventory"]
+                        if world.is_legacy(world.products[inv["product_id"]]["company_id"])]
+    extension_inventory = [inv for inv in world.rows["inventory"]
+                           if not world.is_legacy(world.products[inv["product_id"]]["company_id"])]
+    legacy_stations = [s for s in world.rows["stations"] if world.is_legacy(s["company_id"])]
+    plan_station_events(world, legacy_stations, legacy_inventory, legacy_stations, legacy=True)
+    for company_id in world.extension_company_ids():
+        with world.company_stream(world.key_of(company_id), "events"):
+            plan_station_events(world, world.stations_by_company[company_id], extension_inventory,
+                                world.rows["stations"], legacy=False)
+
+
+def plan_station_events(world: World, origins: list[dict[str, Any]], inventory_rows: list[dict[str, Any]],
+                        neighbourhood: list[dict[str, Any]], *, legacy: bool) -> None:
+    """Ereignisse an den Ursprungsstationen; betroffen sind nur die übergebenen Lagerzeilen."""
     rng = world.rng
     tradeable_by_station: dict[int, list[dict[str, Any]]] = defaultdict(list)
-    for inventory in world.rows["inventory"]:
+    for inventory in inventory_rows:
         if inventory["market_role"] in ("supply", "demand"):
             tradeable_by_station[inventory["station_id"]].append(inventory)
     stations_by_system: dict[int, list[dict[str, Any]]] = defaultdict(list)
-    for station in world.rows["stations"]:
+    for station in neighbourhood:
         stations_by_system[station["system_id"]].append(station)
 
     def eligible_inventory(event_type: EventType, station: dict[str, Any], event_date: date) -> list[dict[str, Any]]:
@@ -2203,7 +4261,7 @@ def plan_market_events(world: World) -> None:
                 if event_type.product_filter(world.products[inv["product_id"]], inv)
                 and series_start_date(world, inv["station_id"], inv["product_id"]) <= event_date - timedelta(days=14)]
 
-    for station in world.rows["stations"]:
+    for station in origins:
         owner_id = station["company_id"]
         months = SIZE_PROFILES[world.companies[owner_id]["size_class"]].months
         event_count = max(0, round(rng.gauss(0.6 + months / 18.0, 0.9)))
@@ -2236,7 +4294,7 @@ def plan_market_events(world: World) -> None:
                                       min(max(1, event_type.max_products // 2), len(neighbour_inventory))):
                     effects.append(_event_effect(rng, inv, supply_base, demand_base, factor))
             event = {"station": station, "code": code, "event_date": event_date, "duration": duration,
-                     "supply": supply_base, "demand": demand_base, "effects": effects}
+                     "supply": supply_base, "demand": demand_base, "effects": effects, "legacy": legacy}
             world.planned_events.append(event)
             for effect in effects:
                 world.shocks[(effect["station_id"], effect["product_id"])].append({
@@ -2331,73 +4389,99 @@ def generate_price_history(world: World) -> None:
     """Plant Marktereignisse und erzeugt Preishistorien für alle handelbaren Station-Ware-Kombinationen."""
     plan_market_events(world)
     for inventory in world.rows["inventory"]:
-        if inventory["market_role"] in ("supply", "demand"):
+        if inventory["market_role"] in ("supply", "demand") and world.is_legacy(
+                world.products[inventory["product_id"]]["company_id"]):
             build_price_series(world, inventory)
+    for company_id in world.extension_company_ids():
+        with world.company_stream(world.key_of(company_id), "prices"):
+            for inventory in world.rows["inventory"]:
+                if (inventory["market_role"] in ("supply", "demand")
+                        and world.products[inventory["product_id"]]["company_id"] == company_id):
+                    build_price_series(world, inventory)
 
 
 # ---------------------------------------------------------------------------
-# 11. Mitarbeiter
+# 12. Mitarbeiter
 # ---------------------------------------------------------------------------
 
 
 def generate_employees(world: World) -> None:
     """Erzeugt Mitarbeiter mit Rollen, Gehältern und Spielwerten für Beziehungspflege und Spionage."""
-    rng = world.rng
-    for company_id, company in world.companies.items():
-        profile = world.profiles[company_id]
-        size = SIZE_PROFILES[company["size_class"]]
-        language = company["language"]
-        fake = world.fake(company_id)
-        stations = world.stations_by_company[company_id]
-        headquarters = stations[0]
-        assignments: list[tuple[str, dict[str, Any]]] = [("executive", headquarters)]
-        assignments += [("finance", headquarters)] * rng.randint(1, 3)
-        assignments += [("relations", headquarters)] * rng.randint(1, 2)
-        assignments += [("intelligence", headquarters)] * {"small": rng.randint(0, 1), "medium": 1, "large": 2}[company["size_class"]]
-        assignments += [("station_manager", station) for station in stations]
-        station_weights = {station["station_id"]: math.sqrt(station["population"]) for station in stations}
-        while len(assignments) < world.targets[company_id]["employees"]:
-            station = world.stations[weighted_choice(rng, station_weights)]
-            assignments.append((weighted_choice(rng, STATION_ROLE_WEIGHTS[station["station_type"]]), station))
+    for company_id in world.companies:
+        with world.company_stream(world.key_of(company_id), "employees"):
+            generate_company_employees(world, company_id)
 
-        founded = date(company["founded_year"], 1, 1)
-        for role_code, station in assignments:
-            role = ROLES[role_code]
-            personality = rng.choice(PERSONALITIES)
-            salary = round(rng.uniform(*role.salary) * size.salary_factor, -1)
-            salary_norm = (salary / size.salary_factor - role.salary[0]) / (role.salary[1] - role.salary[0])
-            loyalty = rng.gauss(65 + profile.loyalty_bias, 14)
-            loyalty += {"loyal": 12, "greedy": -10, "ambitious": -6}.get(personality, 0)
-            loyalty = int(clamp(loyalty, 0, 100))
-            bribe = 100 - loyalty * 0.6 - salary_norm * 20 + rng.gauss(0, 10)
-            bribe += {"greedy": 20, "talkative": 8, "idealistic": -15, "loyal": -10}.get(personality, 0)
-            hire_earliest = max(founded, GAME_REFERENCE_DATE - timedelta(days=15 * 365))
-            hire_date = random_date(rng, hire_earliest, GAME_REFERENCE_DATE - timedelta(days=14))
-            is_active = 0 if role_code not in ("executive", "station_manager") and rng.random() < 0.06 else 1
-            termination = (fmt_date(random_date(rng, hire_date + timedelta(days=60), GAME_REFERENCE_DATE - timedelta(days=1)))
-                           if not is_active and hire_date + timedelta(days=60) < GAME_REFERENCE_DATE else None)
-            if not is_active and termination is None:
-                is_active = 1
-            world.add("employees", {
-                "company_id": company_id,
-                "station_id": station["station_id"],
-                "full_name": person_name(fake),
-                "role": role.title_de if language == "de_DE" else role.title_en,
-                "role_code": role_code,
-                "salary": salary,
-                "hire_date": fmt_date(hire_date),
-                "is_active": is_active,
-                "termination_date": termination,
-                "influence": int(clamp(rng.randint(*role.influence) + rng.gauss(0, 4), 0, 100)),
-                "loyalty": loyalty,
-                "bribe_susceptibility": int(clamp(bribe, 0, 100)),
-                "intel_access_level": role.intel_access_level,
-                "personality": personality,
-            })
+
+def generate_company_employees(world: World, company_id: int) -> None:
+    """Mitarbeiter einer Firma im aktiven Zufallsstrom.
+
+    Bei Erweiterungsfirmen sind Vorstand, erste Partnerbetreuung und erste Marktaufklärung spätestens
+    zur Einstellungsgrenze (HIRE_DATE_CAPS) eingestellt und zum Stichtag aktiv – sie unterzeichnen
+    Rahmenverträge und Schreiben.
+    """
+    rng = world.rng
+    company = world.companies[company_id]
+    hire_cap = None if world.is_legacy(company_id) else HIRE_DATE_CAPS.get(world.key_of(company_id))
+    capped_roles: set[str] = set()
+    profile = world.profiles[company_id]
+    size = SIZE_PROFILES[company["size_class"]]
+    language = company["language"]
+    fake = world.fake(company_id)
+    stations = world.stations_by_company[company_id]
+    headquarters = stations[0]
+    assignments: list[tuple[str, dict[str, Any]]] = [("executive", headquarters)]
+    assignments += [("finance", headquarters)] * rng.randint(1, 3)
+    assignments += [("relations", headquarters)] * rng.randint(1, 2)
+    assignments += [("intelligence", headquarters)] * {"small": rng.randint(0, 1), "medium": 1, "large": 2}[company["size_class"]]
+    assignments += [("station_manager", station) for station in stations]
+    station_weights = {station["station_id"]: math.sqrt(station["population"]) for station in stations}
+    while len(assignments) < world.targets[company_id]["employees"]:
+        station = world.stations[weighted_choice(rng, station_weights)]
+        assignments.append((weighted_choice(rng, STATION_ROLE_WEIGHTS[station["station_type"]]), station))
+
+    founded = date(company["founded_year"], 1, 1)
+    for role_code, station in assignments:
+        role = ROLES[role_code]
+        personality = rng.choice(PERSONALITIES)
+        salary = round(rng.uniform(*role.salary) * size.salary_factor, -1)
+        salary_norm = (salary / size.salary_factor - role.salary[0]) / (role.salary[1] - role.salary[0])
+        loyalty = rng.gauss(65 + profile.loyalty_bias, 14)
+        loyalty += {"loyal": 12, "greedy": -10, "ambitious": -6}.get(personality, 0)
+        loyalty = int(clamp(loyalty, 0, 100))
+        bribe = 100 - loyalty * 0.6 - salary_norm * 20 + rng.gauss(0, 10)
+        bribe += {"greedy": 20, "talkative": 8, "idealistic": -15, "loyal": -10}.get(personality, 0)
+        hire_earliest = max(founded, GAME_REFERENCE_DATE - timedelta(days=15 * 365))
+        hire_date = random_date(rng, hire_earliest, GAME_REFERENCE_DATE - timedelta(days=14))
+        is_active = 0 if role_code not in ("executive", "station_manager") and rng.random() < 0.06 else 1
+        if hire_cap is not None and role_code in HIRE_CAP_ROLES and role_code not in capped_roles:
+            capped_roles.add(role_code)
+            if hire_date > hire_cap:
+                hire_date = random_date(rng, min(hire_earliest, hire_cap), hire_cap)
+            is_active = 1
+        termination = (fmt_date(random_date(rng, hire_date + timedelta(days=60), GAME_REFERENCE_DATE - timedelta(days=1)))
+                       if not is_active and hire_date + timedelta(days=60) < GAME_REFERENCE_DATE else None)
+        if not is_active and termination is None:
+            is_active = 1
+        world.add("employees", {
+            "company_id": company_id,
+            "station_id": station["station_id"],
+            "full_name": person_name(fake),
+            "role": role.title_de if language == "de_DE" else role.title_en,
+            "role_code": role_code,
+            "salary": salary,
+            "hire_date": fmt_date(hire_date),
+            "is_active": is_active,
+            "termination_date": termination,
+            "influence": int(clamp(rng.randint(*role.influence) + rng.gauss(0, 4), 0, 100)),
+            "loyalty": loyalty,
+            "bribe_susceptibility": int(clamp(bribe, 0, 100)),
+            "intel_access_level": role.intel_access_level,
+            "personality": personality,
+        })
 
 
 # ---------------------------------------------------------------------------
-# 12. Ereignisse
+# 13. Ereignisse
 # ---------------------------------------------------------------------------
 
 
@@ -2414,8 +4498,14 @@ def severity_for(supply_impact: float, demand_impact: float) -> str:
 
 
 def generate_events(world: World) -> None:
-    """Schreibt die geplanten Marktereignisse samt aller betroffenen Stationen und Waren."""
-    for planned in sorted(world.planned_events, key=lambda e: e["event_date"]):
+    """Schreibt die geplanten Marktereignisse samt aller betroffenen Stationen und Waren.
+
+    Bestandsereignisse zuerst (chronologisch, gleiche event_id wie vor der Erweiterung), danach die
+    Ereignisse der Erweiterungsfirmen (ebenfalls chronologisch).
+    """
+    ordered = (sorted([e for e in world.planned_events if e["legacy"]], key=lambda e: e["event_date"])
+               + sorted([e for e in world.planned_events if not e["legacy"]], key=lambda e: e["event_date"]))
+    for planned in ordered:
         station = planned["station"]
         event_type = EVENT_TYPES[planned["code"]]
         language = world.language(station["company_id"])
@@ -2453,7 +4543,7 @@ def generate_events(world: World) -> None:
 
 
 # ---------------------------------------------------------------------------
-# 13. Finanzdaten
+# 14. Finanzdaten
 # ---------------------------------------------------------------------------
 
 
@@ -2642,6 +4732,43 @@ SCHEMA_STATEMENTS: tuple[str, ...] = (
         CHECK(company_id <> rival_company_id),
         UNIQUE(company_id, rival_company_id)
     )""",
+    """CREATE TABLE framework_agreements (
+        framework_agreement_id INTEGER PRIMARY KEY,
+        agreement_number TEXT NOT NULL UNIQUE,
+        partnership_id INTEGER NOT NULL REFERENCES trade_partnerships(partnership_id),
+        company_id INTEGER NOT NULL REFERENCES companies(company_id),
+        partner_company_id INTEGER NOT NULL REFERENCES companies(company_id),
+        title TEXT NOT NULL,
+        language TEXT NOT NULL CHECK(language IN ('de_DE','en_US')),
+        signed_date TEXT NOT NULL,
+        start_date TEXT NOT NULL,
+        term_months INTEGER NOT NULL CHECK(term_months > 0),
+        end_date TEXT NOT NULL,
+        current_end_date TEXT NOT NULL,
+        status TEXT NOT NULL CHECK(status IN ('negotiating','active','suspended','expired','terminated')),
+        base_volume REAL NOT NULL CHECK(base_volume > 0),
+        current_volume_cap REAL NOT NULL CHECK(current_volume_cap > 0),
+        price_formula TEXT NOT NULL CHECK(price_formula IN ('fixed','index_linked','cost_plus','market_minus')),
+        indexation TEXT NOT NULL CHECK(indexation IN ('none','category_price_index','fuel_index','risk_index')),
+        price_index_category TEXT,
+        base_discount_pct REAL,
+        cost_plus_pct REAL,
+        adjustment_cap_pct REAL,
+        exclusivity TEXT NOT NULL CHECK(exclusivity IN ('none','right_of_first_refusal','buyer_exclusive',
+            'seller_exclusive','mutual','regional_exclusive')),
+        exclusivity_system_id INTEGER REFERENCES star_systems(system_id),
+        notice_period_days INTEGER NOT NULL CHECK(notice_period_days > 0),
+        auto_renewal INTEGER NOT NULL DEFAULT 0 CHECK(auto_renewal IN (0,1)),
+        renewal_months INTEGER,
+        penalty_rate_pct REAL NOT NULL CHECK(penalty_rate_pct >= 0),
+        escort_company_id INTEGER REFERENCES companies(company_id),
+        seller_signatory_id INTEGER REFERENCES employees(employee_id) DEFERRABLE INITIALLY DEFERRED,
+        buyer_signatory_id INTEGER REFERENCES employees(employee_id) DEFERRABLE INITIALLY DEFERRED,
+        description TEXT NOT NULL,
+        CHECK(company_id <> partner_company_id),
+        CHECK(signed_date < start_date),
+        CHECK(end_date > start_date AND current_end_date >= end_date)
+    )""",
     """CREATE TABLE trade_routes (
         route_id INTEGER PRIMARY KEY,
         origin_station_id INTEGER NOT NULL REFERENCES stations(station_id),
@@ -2693,6 +4820,7 @@ SCHEMA_STATEMENTS: tuple[str, ...] = (
         status TEXT NOT NULL CHECK(status IN ('draft','active','completed','breached','cancelled')),
         penalty_per_day REAL NOT NULL DEFAULT 0 CHECK(penalty_per_day >= 0),
         description TEXT NOT NULL,
+        framework_agreement_id INTEGER REFERENCES framework_agreements(framework_agreement_id),
         CHECK(company_id <> partner_company_id),
         CHECK(deadline >= start_date)
     )""",
@@ -2833,6 +4961,57 @@ SCHEMA_STATEMENTS: tuple[str, ...] = (
         cash_balance REAL NOT NULL,
         UNIQUE(company_id, period)
     )""",
+    """CREATE TABLE framework_agreement_amendments (
+        amendment_id INTEGER PRIMARY KEY,
+        framework_agreement_id INTEGER NOT NULL REFERENCES framework_agreements(framework_agreement_id),
+        amendment_no INTEGER NOT NULL CHECK(amendment_no > 0),
+        amendment_number TEXT NOT NULL UNIQUE,
+        amendment_type TEXT NOT NULL CHECK(amendment_type IN ('volume_increase','volume_reduction',
+            'product_addition','product_removal','price_adjustment','term_extension','exclusivity_clause',
+            'exclusivity_waiver','penalty_clause','service_level_clause','escort_clause','force_majeure_clause',
+            'competition_clause','confidentiality_clause','scope_extension','partial_termination','suspension')),
+        status TEXT NOT NULL CHECK(status IN ('proposed','signed','rejected','withdrawn')),
+        rule TEXT CHECK(rule IS NULL OR rule IN ('first_contract_of_category','cumulative_over_90pct',
+            'calloff_after_end')),
+        proposed_date TEXT NOT NULL CHECK(proposed_date <= '2059-12-31'),
+        signed_date TEXT,
+        effective_date TEXT NOT NULL,
+        initiated_by_company_id INTEGER NOT NULL REFERENCES companies(company_id),
+        volume_before REAL,
+        volume_delta REAL,
+        volume_after REAL CHECK(volume_after IS NULL OR volume_after > 0),
+        price_change_pct REAL,
+        price_factor REAL CHECK(price_factor IS NULL OR price_factor > 0),
+        end_date_new TEXT,
+        category_code TEXT,
+        archetype_code TEXT,
+        exclusivity TEXT,
+        exclusive_system_id INTEGER REFERENCES star_systems(system_id),
+        escort_company_id INTEGER REFERENCES companies(company_id),
+        trigger_contract_id INTEGER REFERENCES contracts(contract_id),
+        trigger_order_id INTEGER REFERENCES orders(order_id),
+        trigger_event_id INTEGER REFERENCES events(event_id),
+        description TEXT NOT NULL,
+        CHECK((status = 'signed') = (signed_date IS NOT NULL)),
+        CHECK(signed_date IS NULL OR (signed_date >= proposed_date AND signed_date <= effective_date)),
+        CHECK(effective_date >= proposed_date),
+        UNIQUE(framework_agreement_id, amendment_no)
+    )""",
+    """CREATE TABLE framework_agreement_scope (
+        scope_id INTEGER PRIMARY KEY,
+        framework_agreement_id INTEGER NOT NULL REFERENCES framework_agreements(framework_agreement_id),
+        category_code TEXT NOT NULL CHECK(category_code IN ('raw_materials','energy','industrial_goods',
+            'technology','food','medical','luxury','contraband')),
+        archetype_code TEXT,
+        system_id INTEGER REFERENCES star_systems(system_id),
+        entry_kind TEXT NOT NULL CHECK(entry_kind IN ('include','exclude','exclusivity')),
+        exclusivity TEXT,
+        valid_from TEXT NOT NULL,
+        valid_to TEXT,
+        added_by_amendment_id INTEGER REFERENCES framework_agreement_amendments(amendment_id),
+        removed_by_amendment_id INTEGER REFERENCES framework_agreement_amendments(amendment_id),
+        CHECK(valid_to IS NULL OR valid_to >= valid_from)
+    )""",
     "CREATE INDEX idx_stations_company ON stations(company_id)",
     "CREATE INDEX idx_stations_system ON stations(system_id)",
     "CREATE INDEX idx_products_company ON products(company_id)",
@@ -2846,6 +5025,10 @@ SCHEMA_STATEMENTS: tuple[str, ...] = (
     "CREATE INDEX idx_contracts_company ON contracts(company_id)",
     "CREATE INDEX idx_contracts_partner ON contracts(partner_company_id)",
     "CREATE INDEX idx_contracts_route ON contracts(route_id)",
+    "CREATE INDEX idx_contracts_framework ON contracts(framework_agreement_id)",
+    "CREATE INDEX idx_framework_pair ON framework_agreements(company_id, partner_company_id)",
+    "CREATE INDEX idx_amendments_framework ON framework_agreement_amendments(framework_agreement_id, amendment_no)",
+    "CREATE INDEX idx_scope_framework ON framework_agreement_scope(framework_agreement_id)",
     "CREATE INDEX idx_customers_company ON customers(company_id)",
     "CREATE INDEX idx_orders_company ON orders(company_id)",
     "CREATE INDEX idx_orders_customer ON orders(customer_id)",
@@ -2949,8 +5132,285 @@ def reachable_from(graph: dict[int, set[int]], start: int) -> set[int]:
     return seen
 
 
-def run_quality_checks(path: Path) -> tuple[list[CheckResult], dict[str, pd.DataFrame]]:
-    """Prüft die erzeugte Datenbank auf Konsistenz und liefert Ergebnisse plus Übersichtstabellen."""
+def framework_scope_covers(scope: pd.DataFrame, category: str, archetype: str, system_id: int, day: str) -> bool:
+    """Sortimentsprüfung aus der Tabelle framework_agreement_scope (gleiche Regel wie der Generator)."""
+    active = scope[(scope["valid_from"] <= day) & (scope["valid_to"].isna() | (scope["valid_to"] >= day))]
+    matches = active[((active["archetype_code"].isna() & (active["category_code"] == category))
+                      | (active["archetype_code"] == archetype))
+                     & (active["system_id"].isna() | (active["system_id"] == system_id))]
+    return bool((matches["entry_kind"] == "include").any() and not (matches["entry_kind"] == "exclude").any())
+
+
+def framework_quality_checks(connection: sqlite3.Connection) -> list[CheckResult]:
+    """Prüfungen der Rahmenverträge: Fremdschlüssel, Daten, Nachträge, Zuordnung, Volumen, Sperren."""
+    checks: list[CheckResult] = []
+    reference = fmt_date(GAME_REFERENCE_DATE)
+    frameworks = query(connection, "SELECT * FROM framework_agreements ORDER BY framework_agreement_id")
+    amendments = query(connection, "SELECT * FROM framework_agreement_amendments ORDER BY framework_agreement_id, "
+                                   "amendment_no")
+    scope = query(connection, "SELECT * FROM framework_agreement_scope")
+    contracts = query(connection, """
+        SELECT k.contract_id, k.contract_number, k.company_id, k.partner_company_id, k.contract_type, k.status,
+               k.start_date, k.total_value, k.framework_agreement_id, p.category_code, p.archetype_code,
+               s.system_id AS destination_system_id
+        FROM contracts k JOIN products p ON p.product_id = k.product_id
+        JOIN stations s ON s.station_id = k.destination_station_id ORDER BY k.start_date, k.contract_id""")
+    companies = query(connection, "SELECT company_id, name, slug, language FROM companies").set_index("company_id")
+    ids_by_slug = {slug: company_id for company_id, slug in companies["slug"].items()}
+    keys = {profile.key: ids_by_slug[profile.slug] for profile in COMPANY_PROFILES}
+
+    checks.append(zero_check(connection, "Rahmenverträge: Paar = aktive Vereinbarung, Sprache des Verkäufers", """
+        SELECT COUNT(*) FROM framework_agreements f
+        LEFT JOIN trade_partnerships p ON p.partnership_id = f.partnership_id
+        JOIN companies c ON c.company_id = f.company_id
+        WHERE p.partnership_id IS NULL OR p.is_active = 0 OR p.company_id <> f.company_id
+           OR p.partner_company_id <> f.partner_company_id OR f.language <> c.language
+           OR p.start_date > f.signed_date""",
+        f"{len(frameworks)} Rahmenverträge an aktiven Vereinbarungen"))
+
+    bad_dates = []
+    for fw in frameworks.itertuples():
+        start = date.fromisoformat(fw.start_date)
+        expected_end = shift_months(start, fw.term_months) - timedelta(days=1)
+        if not (fw.signed_date < fw.start_date and fw.end_date == fmt_date(expected_end)
+                and fw.current_end_date >= fw.end_date):
+            bad_dates.append(fw.agreement_number)
+    checks.append(CheckResult("Rahmenverträge: Unterzeichnung < Beginn, Ende = Beginn + Laufzeit, "
+                              "aktuelles Ende ≥ Ende", not bad_dates,
+                              "Datumslogik eingehalten" if not bad_dates else ", ".join(bad_dates)))
+
+    bad_order = []
+    for fw in frameworks.itertuples():
+        own = amendments[amendments["framework_agreement_id"] == fw.framework_agreement_id]
+        prefix = AMENDMENT_PREFIX[fw.language]
+        numbers_ok = list(own["amendment_no"]) == list(range(1, len(own) + 1)) and all(
+            own["amendment_number"] == [f"{fw.agreement_number}/{prefix}{n}" for n in own["amendment_no"]])
+        proposed = list(own["proposed_date"])
+        chronological = proposed == sorted(proposed)
+        within = own.empty or (own["proposed_date"].min() >= fw.signed_date
+                               and own["proposed_date"].max() < reference
+                               and bool((own["signed_date"].dropna() < reference).all()))
+        logical = all((not isinstance(r.signed_date, str) or r.proposed_date <= r.signed_date <= r.effective_date)
+                      and r.proposed_date <= r.effective_date and r.effective_date >= fw.start_date
+                      for r in own.itertuples())
+        if not (numbers_ok and chronological and within and logical):
+            bad_order.append(fw.agreement_number)
+    checks.append(CheckResult(
+        "Nachträge chronologisch nummeriert (Angebot ≤ Unterzeichnung ≤ Wirkung, nach Rahmenunterzeichnung, ≤ 2059)",
+        not bad_order, f"{len(amendments)} Nachträge in Reihenfolge" if not bad_order else ", ".join(bad_order)))
+
+    def end_at(fw: Any, own: pd.DataFrame, day: str) -> str:
+        extensions = own[(own["amendment_type"] == "term_extension") & own["status"].isin(["signed", "proposed"])
+                         & (own["effective_date"] <= day) & own["end_date_new"].notna()]
+        return max([fw.end_date, *extensions["end_date_new"]])
+
+    bad_assigned, unassigned, volume_issues, chain_issues = [], [], [], []
+    pairs = frameworks.set_index("framework_agreement_id")[["company_id", "partner_company_id"]]
+    for k in contracts[contracts["framework_agreement_id"].notna()].itertuples():
+        frame_pair = pairs.loc[int(k.framework_agreement_id)]
+        if (k.company_id, k.partner_company_id) != (frame_pair["company_id"], frame_pair["partner_company_id"]):
+            bad_assigned.append(k.contract_number)
+    for fw in frameworks.itertuples():
+        own = amendments[amendments["framework_agreement_id"] == fw.framework_agreement_id]
+        own_scope = scope[scope["framework_agreement_id"] == fw.framework_agreement_id]
+        suspensions = own[(own["amendment_type"] == "suspension") & (own["status"] == "signed")]["effective_date"]
+        suspended_from = suspensions.min() if not suspensions.empty else None
+        pair = contracts[(contracts["company_id"] == fw.company_id)
+                         & (contracts["partner_company_id"] == fw.partner_company_id)]
+        for k in pair.itertuples():
+            eligible = (k.contract_type in FRAMEWORK_CALLOFF_TYPES and k.start_date >= fw.start_date
+                        and (suspended_from is None or k.start_date < suspended_from)
+                        and k.start_date <= end_at(fw, own, k.start_date)
+                        and framework_scope_covers(own_scope, k.category_code, k.archetype_code,
+                                                   k.destination_system_id, k.start_date))
+            assigned = k.framework_agreement_id == fw.framework_agreement_id
+            if assigned and not eligible:
+                bad_assigned.append(k.contract_number)
+            elif eligible and not assigned:
+                unassigned.append(k.contract_number)
+        # Volumen: kumulierte Abrufe (ohne Stornos) nie über der am Vertragsbeginn gültigen Obergrenze
+        volume_rows = own[own["amendment_type"].isin(["volume_increase", "volume_reduction"])
+                          & own["status"].isin(["signed", "proposed"])].sort_values(["effective_date", "amendment_no"])
+        previous = fw.base_volume
+        for amendment in volume_rows.itertuples():
+            if (abs(amendment.volume_before - previous) > 0.01
+                    or abs(amendment.volume_after - amendment.volume_before - amendment.volume_delta) > 0.01):
+                chain_issues.append(amendment.amendment_number)
+            previous = amendment.volume_after
+            if amendment.rule == "cumulative_over_90pct":
+                trigger = contracts[contracts["contract_id"] == amendment.trigger_contract_id]
+                if (trigger.empty or trigger.iloc[0]["framework_agreement_id"] != fw.framework_agreement_id
+                        or amendment.effective_date > trigger.iloc[0]["start_date"]):
+                    chain_issues.append(amendment.amendment_number)
+        cumulative = 0.0
+        for k in contracts[(contracts["framework_agreement_id"] == fw.framework_agreement_id)
+                           & (contracts["status"] != "cancelled")].itertuples():
+            cumulative += k.total_value
+            statuses = ["signed", "proposed"] if k.status == "draft" else ["signed"]
+            valid = volume_rows[volume_rows["status"].isin(statuses) & (volume_rows["effective_date"] <= k.start_date)]
+            cap = valid.iloc[-1]["volume_after"] if not valid.empty else fw.base_volume
+            if cumulative > cap + 0.01:
+                volume_issues.append(f"{fw.agreement_number} bei {k.contract_number}")
+                break
+    checks.append(CheckResult(
+        "Zugeordnete Verträge: gleiches Paar, Abruftyp, Beginn in der (verlängerten) Laufzeit, Ware im Sortiment",
+        not bad_assigned and contracts["framework_agreement_id"].notna().sum() > 0,
+        f"{int(contracts['framework_agreement_id'].notna().sum())} Verträge zugeordnet" if not bad_assigned
+        else f"{len(bad_assigned)} Verstöße, z. B. {', '.join(bad_assigned[:5])}"))
+    checks.append(CheckResult("Zuordnung vollständig: jeder passende Abrufvertrag gehört zu seinem Rahmen",
+                              not unassigned, "deterministisch und vollständig" if not unassigned
+                              else f"{len(unassigned)} fehlen, z. B. {', '.join(unassigned[:5])}"))
+    checks.append(CheckResult(
+        "Rahmenvolumen inkl. Nachträgen nie überschritten; Volumen-Nachträge lückenlos und vor ihrem Auslöser",
+        not volume_issues and not chain_issues,
+        "Summe der Abrufe ≤ Obergrenze zu jedem Vertragsbeginn" if not volume_issues and not chain_issues
+        else "; ".join(volume_issues[:3] + chain_issues[:3])))
+
+    bad_state = []
+    for fw in frameworks.itertuples():
+        signed = amendments[(amendments["framework_agreement_id"] == fw.framework_agreement_id)
+                            & (amendments["status"] == "signed")].sort_values(["effective_date", "amendment_no"])
+        volumes = signed[signed["amendment_type"].isin(["volume_increase", "volume_reduction"])]["volume_after"]
+        ends = signed[signed["amendment_type"] == "term_extension"]["end_date_new"].dropna()
+        cap = volumes.iloc[-1] if not volumes.empty else fw.base_volume
+        end = max([fw.end_date, *ends])
+        suspended = ((signed["amendment_type"] == "suspension") & (signed["effective_date"] < reference)).any()
+        status = "suspended" if suspended else ("expired" if end < reference else
+                                                ("negotiating" if fw.start_date > reference else "active"))
+        if abs(cap - fw.current_volume_cap) > 0.01 or end != fw.current_end_date or status != fw.status:
+            bad_state.append(fw.agreement_number)
+    checks.append(CheckResult("Aktuelles Volumen, Ende und Status des Rahmens folgen aus den unterzeichneten "
+                              "Nachträgen", not bad_state, "konsistent" if not bad_state else ", ".join(bad_state)))
+
+    checks.append(zero_check(connection, "Unterzeichner am Unterzeichnungstag bei der Vertragspartei beschäftigt", """
+        SELECT COUNT(*) FROM framework_agreements f
+        LEFT JOIN employees s ON s.employee_id = f.seller_signatory_id
+        LEFT JOIN employees b ON b.employee_id = f.buyer_signatory_id
+        WHERE s.employee_id IS NULL OR b.employee_id IS NULL
+           OR s.company_id <> f.company_id OR b.company_id <> f.partner_company_id
+           OR s.hire_date > f.signed_date OR b.hire_date > f.signed_date
+           OR (s.termination_date IS NOT NULL AND s.termination_date <= f.signed_date)
+           OR (b.termination_date IS NOT NULL AND b.termination_date <= f.signed_date)""",
+        "alle Unterschriften gültig"))
+
+    station_types = query(connection, "SELECT company_id, station_type FROM stations")
+    types_by_company = station_types.groupby("company_id")["station_type"].agg(set).to_dict()
+    consumers_by_category: dict[str, frozenset[str]] = defaultdict(frozenset)
+    for archetype in PRODUCT_ARCHETYPES:
+        consumers_by_category[archetype.category] |= archetype.consumers
+    no_consumer = []
+    for entry in scope[scope["entry_kind"] == "include"].itertuples():
+        buyer = frameworks.loc[frameworks["framework_agreement_id"] == entry.framework_agreement_id].iloc[0]
+        consumers = (ARCHETYPES_BY_CODE[entry.archetype_code].consumers if isinstance(entry.archetype_code, str)
+                     else consumers_by_category[entry.category_code])
+        if not consumers & types_by_company[buyer["partner_company_id"]]:
+            no_consumer.append(f"{buyer['agreement_number']}:{entry.archetype_code or entry.category_code}")
+    checks.append(CheckResult("Jede Sortimentsposition hat beim Käufer einen verbrauchenden Stationstyp",
+                              not no_consumer, f"{int((scope['entry_kind'] == 'include').sum())} Positionen geprüft"
+                              if not no_consumer else ", ".join(no_consumer[:6])))
+
+    # Exklusivitätssperren der neuen Verkäufer (Verträge nach Beginn, Partner-Spotbestellungen nach Datum)
+    sales = query(connection, """
+        SELECT k.contract_number AS ref, k.company_id, k.partner_company_id AS buyer_id, k.start_date AS day,
+               p.category_code, p.archetype_code, s.system_id
+        FROM contracts k JOIN products p ON p.product_id = k.product_id
+        JOIN stations s ON s.station_id = k.destination_station_id
+        UNION ALL
+        SELECT o.order_number, o.company_id, o.customer_company_id, substr(o.order_date, 1, 10),
+               p.category_code, p.archetype_code, s.system_id
+        FROM orders o JOIN order_items oi ON oi.order_id = o.order_id
+        JOIN products p ON p.product_id = oi.product_id JOIN stations s ON s.station_id = o.destination_station_id
+        WHERE o.contract_id IS NULL""")
+    system_ids = dict(query(connection, "SELECT code, system_id FROM star_systems").itertuples(index=False))
+    violations = []
+    for rule in EXCLUSIVITY_FILTERS:
+        hit = sales[sales["company_id"].isin([keys[k] for k in rule["sellers"]])]
+        if "categories" in rule:
+            hit = hit[hit["category_code"].isin(rule["categories"])]
+        if "archetypes" in rule:
+            hit = hit[hit["archetype_code"].isin(rule["archetypes"])]
+        if "system" in rule:
+            hit = hit[hit["system_id"] == system_ids[rule["system"]]]
+        if "from" in rule:
+            hit = hit[hit["day"] >= rule["from"]]
+        if "until" in rule:
+            hit = hit[hit["day"] <= rule["until"]]
+        if "allowed_buyer" in rule:
+            hit = hit[hit["buyer_id"] != keys[rule["allowed_buyer"]]]
+        else:
+            hit = hit[hit["buyer_id"] == keys[rule["buyer"]]]
+        violations += list(hit["ref"])
+    checks.append(CheckResult("Keine Exklusivitätsverstöße neuer Verkäufer (Verträge und Spotbestellungen)",
+                              not violations, f"{len(EXCLUSIVITY_FILTERS)} Sperren eingehalten" if not violations
+                              else f"{len(violations)} Verstöße, z. B. {', '.join(violations[:5])}"))
+
+    employees = query(connection, "SELECT employee_id, company_id, role_code, hire_date, is_active FROM employees "
+                                  "ORDER BY employee_id")
+    cap_violations = []
+    for key, cap in HIRE_DATE_CAPS.items():
+        staff = employees[employees["company_id"] == keys[key]]
+        for role in HIRE_CAP_ROLES:
+            first = staff[staff["role_code"] == role].head(1)
+            if not first.empty and (first.iloc[0]["hire_date"] > fmt_date(cap) or not first.iloc[0]["is_active"]):
+                cap_violations.append(f"{companies.loc[keys[key], 'name']}: {role}")
+    checks.append(CheckResult("Einstellungsgrenzen neuer Firmen (Vorstand, erste Partnerbetreuung/Marktaufklärung)",
+                              not cap_violations, f"{len(HIRE_DATE_CAPS)} Firmen geprüft" if not cap_violations
+                              else "; ".join(cap_violations)))
+    return checks
+
+
+def baseline_quality_checks(connection: sqlite3.Connection, baseline: Path) -> tuple[list[CheckResult], pd.DataFrame]:
+    """Bestandsvergleich (Seed 42): Zeilen des alten Datenstands müssen unverändert enthalten sein."""
+    connection.execute(f"ATTACH DATABASE '{baseline.as_posix()}' AS baseline")
+    rows = []
+    try:
+        tables = [name for (name,) in connection.execute(
+            "SELECT name FROM baseline.sqlite_master WHERE type = 'table' ORDER BY rowid")]
+        for table in tables:
+            columns = ", ".join(info[1] for info in connection.execute(f"PRAGMA baseline.table_info({table})"))
+            old = scalar(connection, f"SELECT COUNT(*) FROM baseline.{table}")
+            changed = scalar(connection, f"SELECT COUNT(*) FROM (SELECT {columns} FROM baseline.{table} "
+                                         f"EXCEPT SELECT {columns} FROM main.{table})")
+            now = scalar(connection, f"SELECT COUNT(*) FROM {table}")
+            rows.append({"table": table, "baseline_rows": old, "rows_now": now, "unchanged": old - changed,
+                         "changed": changed})
+    finally:
+        connection.execute("DETACH DATABASE baseline")
+    frame = pd.DataFrame(rows)
+    master = frame[frame["table"].isin(["companies", "star_systems", "stations", "products", "employees"])]
+    movement = frame[~frame["table"].isin(master["table"])]
+    checks = [
+        CheckResult("Bestandsvergleich: Stammdaten der 6 Bestandsfirmen identisch (Firmen, Systeme, Stationen, "
+                    "Produkte, Mitarbeiter)", int(master["changed"].sum()) == 0,
+                    f"{int(master['unchanged'].sum())} von {int(master['baseline_rows'].sum())} Zeilen unverändert"),
+        CheckResult("Bestandsvergleich: Bewegungsdaten der Bestandsfirmen unverändert (Routen bis Finanzen)",
+                    int(movement["changed"].sum()) == 0,
+                    f"{int(movement['unchanged'].sum())} von {int(movement['baseline_rows'].sum())} Zeilen unverändert"),
+    ]
+    assigned = scalar(connection, f"SELECT COUNT(*) FROM contracts WHERE framework_agreement_id IS NOT NULL "
+                                  f"AND company_id <= {len(LEGACY_COMPANY_KEYS)}")
+    triggers = {number for (number,) in connection.execute("""
+        SELECT k.contract_number FROM framework_agreement_amendments a
+        JOIN contracts k ON k.contract_id = a.trigger_contract_id
+        JOIN framework_agreements f ON f.framework_agreement_id = a.framework_agreement_id
+        WHERE a.rule = 'cumulative_over_90pct' AND f.company_id <= ? AND f.partner_company_id <= ?""",
+        (len(LEGACY_COMPANY_KEYS), len(LEGACY_COMPANY_KEYS)))}
+    checks.append(CheckResult(
+        f"Bestandsverträge unter Rahmen: {BASELINE_EXPECTED_ASSIGNED_CONTRACTS} Zuordnungen, "
+        f"{len(BASELINE_EXPECTED_VOLUME_TRIGGERS)} Volumen-Auslöser",
+        assigned == BASELINE_EXPECTED_ASSIGNED_CONTRACTS and triggers == BASELINE_EXPECTED_VOLUME_TRIGGERS,
+        f"{assigned} Zuordnungen, {len(triggers & BASELINE_EXPECTED_VOLUME_TRIGGERS)}/"
+        f"{len(BASELINE_EXPECTED_VOLUME_TRIGGERS)} Auslöser getroffen, "
+        f"{len(triggers - BASELINE_EXPECTED_VOLUME_TRIGGERS)} zusätzlich"))
+    return checks, frame
+
+
+def run_quality_checks(path: Path, seed: int = DEFAULT_SEED,
+                       baseline: Path | None = None) -> tuple[list[CheckResult], dict[str, pd.DataFrame]]:
+    """Prüft die erzeugte Datenbank auf Konsistenz und liefert Ergebnisse plus Übersichtstabellen.
+
+    Mit baseline (nur bei Seed 42) wird zusätzlich der Bestandsvergleich mit dem alten Datenstand geprüft.
+    """
     connection = open_connection(path)
     checks: list[CheckResult] = []
     tables: dict[str, pd.DataFrame] = {}
@@ -2966,11 +5426,16 @@ def run_quality_checks(path: Path) -> tuple[list[CheckResult], dict[str, pd.Data
 
         companies = query(connection, "SELECT company_id, name, language, size_class FROM companies")
         languages = companies["language"].value_counts()
+        per_size = companies.groupby("size_class")["language"].value_counts().unstack(fill_value=0)
         checks.append(CheckResult(
-            "Sechs Firmen: 2 small, 2 medium, 2 large; ≥2 de_DE und ≥2 en_US",
-            len(companies) == 6 and all(companies["size_class"].value_counts().get(s, 0) == 2 for s in SIZE_CLASSES)
-            and languages.get("de_DE", 0) >= 2 and languages.get("en_US", 0) >= 2,
-            f"de_DE={languages.get('de_DE', 0)}, en_US={languages.get('en_US', 0)}"))
+            "18 Firmen: je 6 small, medium, large; je Größenklasse ≥2 de_DE und ≥2 en_US",
+            len(companies) == len(COMPANY_PROFILES) == 18
+            and all(companies["size_class"].value_counts().get(s, 0) == 6 for s in SIZE_CLASSES)
+            and all(per_size.get(language, pd.Series(dtype=int)).get(s, 0) >= 2
+                    for s in SIZE_CLASSES for language in LANGUAGES),
+            f"de_DE={languages.get('de_DE', 0)}, en_US={languages.get('en_US', 0)}; "
+            + ", ".join(f"{s} {per_size.loc[s].get('de_DE', 0)}/{per_size.loc[s].get('en_US', 0)}"
+                        for s in SIZE_CLASSES if s in per_size.index)))
         systems = scalar(connection, "SELECT COUNT(*) FROM star_systems")
         checks.append(CheckResult("Mindestens 8 Sternensysteme und 30 Stationen",
                                   systems >= 8 and counts["stations"] >= 30,
@@ -3018,9 +5483,15 @@ def run_quality_checks(path: Path) -> tuple[list[CheckResult], dict[str, pd.Data
         checks.append(CheckResult("Partnerzahl (aktive Vereinbarungen) passt zur Größe: small 1–3, medium 3–6, large 6–10",
                                   not partner_violations,
                                   "alle Bereiche eingehalten" if not partner_violations else "; ".join(partner_violations)))
-        hub = partners.sort_values(["distinct_partners", "active_agreements"], ascending=False).iloc[0]
+        hub = partners.sort_values(["distinct_partners", "active_agreements", "company_id"],
+                                   ascending=[False, False, True], kind="stable").iloc[0]
         checks.append(CheckResult("Zentraler Hub ist eine große Firma", hub["size_class"] == "large",
-                                  f"{hub['name']} mit {hub['distinct_partners']} direkten Partnern"))
+                                  f"{hub['name']} mit {hub['distinct_partners']} direkten Partnern und "
+                                  f"{hub['active_agreements']} Vereinbarungen"))
+        checks.append(zero_check(connection, "Jede Firma hat mindestens eine ausgehende Vereinbarung (Verkäufer)", """
+            SELECT COUNT(*) FROM companies c WHERE NOT EXISTS (
+                SELECT 1 FROM trade_partnerships p WHERE p.is_active = 1 AND p.company_id = c.company_id)""",
+            "alle Firmen verkaufen an mindestens einen Partner"))
 
         graph = partner_graph(connection)
         reachable = reachable_from(graph, next(iter(graph)))
@@ -3034,10 +5505,11 @@ def run_quality_checks(path: Path) -> tuple[list[CheckResult], dict[str, pd.Data
                          and graph[a] & graph[b]]
         names = dict(zip(companies["company_id"], companies["name"]))
         checks.append(CheckResult(
-            "Unvollständiges Netz; ≥2 Firmen nur über Zwischenhändler verbunden",
-            direct_pairs < all_pairs and len(indirect_only) >= 1,
-            f"{direct_pairs}/{all_pairs} Paare direkt; z. B. {names[indirect_only[0][0]]} ↔ "
-            f"{names[indirect_only[0][1]]} nur indirekt" if indirect_only else "keine indirekten Paare"))
+            "Unvollständiges Netz; ≥2 Firmenpaare nur über Zwischenhändler verbunden",
+            direct_pairs < all_pairs and len(indirect_only) >= 2,
+            f"{direct_pairs}/{all_pairs} Paare direkt, {len(indirect_only)} nur über einen Zwischenhändler; "
+            f"z. B. {names[indirect_only[0][0]]} ↔ {names[indirect_only[0][1]]}" if indirect_only
+            else "keine indirekten Paare"))
 
         # Handelsrouten
         checks.append(zero_check(connection, "Handelsrouten verweisen auf gültige Stationen/Produkte der Firma", """
@@ -3103,6 +5575,11 @@ def run_quality_checks(path: Path) -> tuple[list[CheckResult], dict[str, pd.Data
         illegal_stations = scalar(connection, """
             SELECT COUNT(DISTINCT i.station_id) FROM inventory i JOIN products p ON p.product_id = i.product_id
             WHERE p.legal_status = 'illegal'""")
+        checks.append(zero_check(connection, "Schwarzmarktware nur bei Firmen mit Schwarzmarkt-Station", """
+            SELECT COUNT(*) FROM products p WHERE p.legal_status = 'illegal' AND NOT EXISTS (
+                SELECT 1 FROM stations s WHERE s.company_id = p.company_id
+                AND s.station_type IN ('free_port','smuggler_haven') AND s.security_level IN ('low','lawless'))""",
+            "jede Firma mit Schwarzmarktware hat einen Frei- oder Schmugglerhafen mit niedriger Sicherheit"))
         checks.append(zero_check(connection, "Illegale Produkte nur an Stationen mit niedriger Sicherheit", """
             SELECT COUNT(*) FROM inventory i JOIN products p ON p.product_id = i.product_id
             JOIN stations s ON s.station_id = i.station_id
@@ -3239,6 +5716,22 @@ def run_quality_checks(path: Path) -> tuple[list[CheckResult], dict[str, pd.Data
         tables["events"] = query(connection, """
             SELECT event_type, COUNT(*) AS events, ROUND(AVG(price_impact) * 100, 1) AS avg_price_impact_pct
             FROM events GROUP BY event_type ORDER BY events DESC""")
+        # Rahmenverträge
+        checks.extend(framework_quality_checks(connection))
+        tables["frameworks"] = query(connection, """
+            SELECT f.agreement_number, f.status, ROUND(f.base_volume / 1e6, 1) AS base_mcr,
+                   ROUND(f.current_volume_cap / 1e6, 1) AS cap_mcr,
+                   (SELECT COUNT(*) FROM contracts k WHERE k.framework_agreement_id = f.framework_agreement_id)
+                       AS contracts,
+                   (SELECT ROUND(SUM(k.total_value) / 1e6, 1) FROM contracts k
+                     WHERE k.framework_agreement_id = f.framework_agreement_id AND k.status <> 'cancelled') AS used_mcr,
+                   (SELECT COUNT(*) FROM framework_agreement_amendments a
+                     WHERE a.framework_agreement_id = f.framework_agreement_id) AS amendments,
+                   f.current_end_date
+            FROM framework_agreements f ORDER BY f.framework_agreement_id""")
+        if baseline is not None and seed == BASELINE_SEED and baseline.exists():
+            baseline_checks, tables["baseline"] = baseline_quality_checks(connection, baseline)
+            checks.extend(baseline_checks)
         tables["financials"] = query(connection, """
             SELECT c.name, COUNT(*) AS months, ROUND(SUM(f.goods_revenue + f.service_revenue) / 1e6, 2) AS revenue_mcr,
                    ROUND(SUM(f.net_income) / 1e6, 2) AS net_income_mcr,
@@ -3259,15 +5752,17 @@ PIPELINE: tuple[tuple[str, Callable[[World], None]], ...] = (
     ("2. Sternensysteme und Stationen", lambda w: (generate_star_systems(w), generate_stations(w))),
     ("3. Produkte", generate_products),
     ("4. Partnerschaften und Rivalitäten", lambda w: (generate_partnerships(w), generate_rivalries(w))),
-    ("5. Handelsrouten", generate_trade_routes),
-    ("6. Lager", generate_inventory),
-    ("7. Verträge", generate_contracts),
-    ("8. Kunden, Bestellungen und Bestellpositionen", generate_orders),
-    ("9. Lieferungen", generate_shipments),
-    ("10. Preisverläufe", generate_price_history),
-    ("11. Mitarbeiter", generate_employees),
-    ("12. Ereignisse", generate_events),
-    ("13. Finanzdaten", generate_financials),
+    ("5. Rahmenverträge (Grundlage)", generate_framework_agreements),
+    ("6. Handelsrouten", generate_trade_routes),
+    ("7. Lager", generate_inventory),
+    ("8. Verträge", generate_contracts),
+    ("9. Kunden, Bestellungen und Bestellpositionen", generate_orders),
+    ("10. Lieferungen", generate_shipments),
+    ("11. Preisverläufe", generate_price_history),
+    ("12. Mitarbeiter", generate_employees),
+    ("13. Ereignisse", generate_events),
+    ("14. Finanzdaten", generate_financials),
+    ("15. Rahmenverträge: Zuordnung, Nachträge, Unterzeichner", finalize_framework_agreements),
 )
 
 
@@ -3276,7 +5771,7 @@ def run_pipeline(world: World) -> None:
     for label, step in PIPELINE:
         started = time.perf_counter()
         step(world)
-        print(f"  {label:<48} {time.perf_counter() - started:6.2f} s")
+        print(f"  {label:<56} {time.perf_counter() - started:6.2f} s")
 
 
 def print_table(title: str, frame: pd.DataFrame) -> None:
@@ -3302,6 +5797,8 @@ def print_summary(path: Path, checks: list[CheckResult], tables: dict[str, pd.Da
           f"Lieferungen {counts['shipments']} | Preispunkte {counts['price_history']}")
     print(f" Kunden {counts['customers']} | Mitarbeiter {counts['employees']} | Ereignisse {counts['events']} "
           f"({counts['event_effects']} Wirkungen) | Finanzmonate {counts['company_financials']}")
+    print(f" Rahmenverträge {counts['framework_agreements']} | Nachträge {counts['framework_agreement_amendments']} | "
+          f"Sortimentseinträge {counts['framework_agreement_scope']}")
 
     print_table("Mengengerüst je Firma", tables["volume"].drop(columns=["company_id"]))
     print_table("Handelspartner je Firma", tables["partners"].drop(columns=["company_id"]))
@@ -3312,6 +5809,9 @@ def print_summary(path: Path, checks: list[CheckResult], tables: dict[str, pd.Da
     print_table("Preishistorie: mittlere Länge (Monate) nach Größe des Anbieters", tables["history_months"])
     print_table("Ereignisse", tables["events"])
     print_table("Finanzen über den Datenzeitraum (Mio. CR)", tables["financials"])
+    print_table("Rahmenverträge (Mio. CR)", tables["frameworks"])
+    if "baseline" in tables:
+        print_table("Bestandsvergleich mit dem Datenstand vor der Erweiterung", tables["baseline"])
 
     print("\nQualitätsprüfungen")
     print("------------------")
@@ -3328,6 +5828,9 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--seed", type=int, default=DEFAULT_SEED, help=f"Zufalls-Seed (Standard: {DEFAULT_SEED})")
     parser.add_argument("--output", type=Path, default=Path(DEFAULT_OUTPUT),
                         help=f"Pfad der SQLite-Datei (Standard: {DEFAULT_OUTPUT})")
+    parser.add_argument("--baseline", type=Path, default=DEFAULT_BASELINE,
+                        help="Bestands-DB für den Bestandsvergleich bei Seed 42 (wird übersprungen, wenn nicht "
+                             "vorhanden)")
     return parser.parse_args(argv)
 
 
@@ -3340,7 +5843,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     run_pipeline(world)
     print("  Schreibe SQLite-Datenbank (eine Transaktion) ...")
     write_database(world, args.output)
-    checks, tables = run_quality_checks(args.output)
+    checks, tables = run_quality_checks(args.output, args.seed, args.baseline)
     print_summary(args.output, checks, tables, args.seed, time.perf_counter() - started)
     return 0 if all(check.passed for check in checks) else 1
 
