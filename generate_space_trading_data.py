@@ -104,6 +104,7 @@ DOCKING_OVERHEAD_HOURS = 3.0  # Ab- und Andocken, Freigaben
 PRICE_HISTORY_INTERVAL_DAYS = 14
 PRICE_ELASTICITY = 0.45
 PAYMENT_TERMS_DAYS = 30
+HELD_RESTOCK_SHARE = 0.15  # Aufstockung knapper Lager für zurückgehaltene Jahresendaufträge (Anteil Zielbestand)
 
 FUEL_COST_PER_DISTANCE_UNIT = 22.0  # Grundverbrauch eines Frachters je Raumeinheit
 FUEL_COST_PER_TONNE_DISTANCE = 0.006  # Zusatzverbrauch je Tonne Ladung und Raumeinheit
@@ -3874,8 +3875,13 @@ def generate_company_customers(world: World, company_id: int) -> None:
 def simulate_order_timeline(rng: random.Random, order_dt: datetime, travel_hours: float, risk: str,
                             language: str, *, allow_cancel: bool, allow_delay: bool,
                             force_late_after: datetime | None = None,
-                            illegal_cargo: bool = False) -> dict[str, Any]:
-    """Simuliert Bestätigung, Abflug, Ankunft, Verzögerungen und leitet Bestell-/Zahlungsstatus ab."""
+                            illegal_cargo: bool = False, year_end_rush: bool = False) -> dict[str, Any]:
+    """Simuliert Bestätigung, Abflug, Ankunft, Verzögerungen und leitet Bestell-/Zahlungsstatus ab.
+
+    Jahresendaufträge (`year_end_rush`), die noch vor dem Stichtag ankämen, bleiben bestätigt und fliegen erst
+    nach der Öffnung des Raums ab. Die Zahl der Zufallsziehungen bleibt dabei gleich (Bestandsschutz der übrigen
+    Daten im gemeinsamen Strom).
+    """
     now = GAME_REFERENCE_DATETIME
     confirmed_at = order_dt + timedelta(hours=rng.uniform(2, 36))
     departure = (confirmed_at + timedelta(hours=rng.uniform(12, 72))).replace(second=0, microsecond=0)
@@ -3905,10 +3911,17 @@ def simulate_order_timeline(rng: random.Random, order_dt: datetime, travel_hours
         timeline["delay_hours"] = delay_hours
         timeline["actual_arrival"] = (expected_arrival + timedelta(hours=delay_hours)).replace(second=0,
                                                                                                 microsecond=0)
+    if year_end_rush and now >= timeline["actual_arrival"]:
+        # Abfertigungsstau zum Jahreswechsel: Abflug nach dem Stichtag mit derselben Bearbeitungszeit
+        held_departure = (now + (departure - confirmed_at)).replace(second=0, microsecond=0)
+        shift = held_departure - departure
+        timeline.update(departure=held_departure, expected_arrival=expected_arrival + shift,
+                        actual_arrival=expected_arrival + shift, incident=None, delay_hours=0.0,
+                        required_delivery_date=(to_datetime(required) + shift).date(), year_end_hold=True)
 
     if now < confirmed_at:
         status, payment = "pending", "unpaid"
-    elif now < departure:
+    elif now < timeline["departure"]:
         status, payment = "confirmed", ("unpaid" if rng.random() < 0.3 else "invoiced")
     elif now < timeline["actual_arrival"]:
         status = "delayed" if timeline["incident"] else "in_transit"
@@ -3927,7 +3940,7 @@ def simulate_order_timeline(rng: random.Random, order_dt: datetime, travel_hours
 def build_order(world: World, company_id: int, customer: dict[str, Any], lines: list[tuple[dict[str, Any], int, float]],
                 order_dt: datetime, sequence: int, *, contract: dict[str, Any] | None = None,
                 calloff_index: int = 0, calloff_total: int = 0, force_late_after: datetime | None = None,
-                allow_cancel: bool = True, allow_delay: bool = True) -> None:
+                allow_cancel: bool = True, allow_delay: bool = True, year_end_rush: bool = False) -> None:
     """Legt eine Bestellung mit Positionen an; Fracht/Versicherung/Gebühren werden ausgewiesen."""
     rng = world.rng
     language = world.language(company_id)
@@ -3962,7 +3975,8 @@ def build_order(world: World, company_id: int, customer: dict[str, Any], lines: 
 
     timeline = simulate_order_timeline(rng, order_dt, first_route["travel_time_hours"], risk, language,
                                        allow_cancel=allow_cancel, allow_delay=allow_delay,
-                                       force_late_after=force_late_after, illegal_cargo=illegal)
+                                       force_late_after=force_late_after, illegal_cargo=illegal,
+                                       year_end_rush=year_end_rush)
     if contract is not None:
         note = CALLOFF_NOTE[language].format(index=calloff_index, total=calloff_total,
                                              number=contract["contract_number"])
@@ -4041,7 +4055,7 @@ def generate_company_orders(world: World, company_id: int, contracts: list[dict[
                            contract["agreed_price_per_unit"])],
                 "contract": contract, "calloff_index": index, "calloff_total": len(plan["calloffs"]),
                 "force_late_after": late, "allow_cancel": False,
-                "allow_delay": plan["status"] not in ("completed", "breached"),
+                "allow_delay": plan["status"] not in ("completed", "breached"), "year_end_rush": False,
             })
 
     active_routes = [r for r in world.rows["trade_routes"] if r["company_id"] == company_id and r["is_active"]]
@@ -4072,12 +4086,13 @@ def generate_company_orders(world: World, company_id: int, contracts: list[dict[
                   spot_unit_price(world, route, is_partner))
                  for route in rng.sample(routes, line_count)]
         earliest = max(window_start, to_datetime(date.fromisoformat(customer["since_date"])))
-        if rng.random() < 0.07:
+        year_end_rush = rng.random() < 0.07  # Jahresendauftrag in den letzten drei Wochen vor dem Stichtag
+        if year_end_rush:
             earliest = max(earliest, GAME_REFERENCE_DATETIME - timedelta(days=21))
         order_dt = random_datetime(rng, earliest, GAME_REFERENCE_DATETIME - timedelta(hours=1))
         return {"order_dt": order_dt, "customer": customer, "lines": lines, "contract": None,
                 "calloff_index": 0, "calloff_total": 0, "force_late_after": None,
-                "allow_cancel": True, "allow_delay": True}
+                "allow_cancel": True, "allow_delay": True, "year_end_rush": year_end_rush}
 
     spot_count = max(0, world.targets[company_id]["orders"] - len(pending_orders))
     for _ in range(spot_count):
@@ -4100,25 +4115,35 @@ def generate_company_orders(world: World, company_id: int, contracts: list[dict[
         build_order(world, company_id, spec["customer"], spec["lines"], spec["order_dt"], sequence,
                     contract=spec["contract"], calloff_index=spec["calloff_index"],
                     calloff_total=spec["calloff_total"], force_late_after=spec["force_late_after"],
-                    allow_cancel=spec["allow_cancel"], allow_delay=spec["allow_delay"])
+                    allow_cancel=spec["allow_cancel"], allow_delay=spec["allow_delay"],
+                    year_end_rush=spec["year_end_rush"])
 
 
 def book_inventory_reservations(world: World) -> None:
     """Reserviert Lagerware für noch nicht abgeflogene Bestellungen (pending/confirmed).
 
-    Bestandsware im gemeinsamen Strom, Ware der Erweiterungsfirmen im Strom des Anbieters.
+    Bestandsware im gemeinsamen Strom, Ware der Erweiterungsfirmen im Strom des Anbieters. Zum Stichtag
+    zurückgehaltene Jahresendaufträge werden danach ohne Zufall reserviert, damit die Ströme unverändert bleiben.
     """
     reserved: dict[tuple[int, int], int] = defaultdict(int)
+    held: dict[tuple[int, int], int] = defaultdict(int)
     orders = {o["order_id"]: o for o in world.rows["orders"]}
     for item in world.rows["order_items"]:
         order = orders[item["order_id"]]
         if order["status"] in ("pending", "confirmed"):
-            reserved[(order["origin_station_id"], item["product_id"])] += item["quantity"]
+            bucket = held if world.order_timelines[order["order_id"]].get("year_end_hold") else reserved
+            bucket[(order["origin_station_id"], item["product_id"])] += item["quantity"]
     owner = {key: world.products[key[1]]["company_id"] for key in reserved}
     apply_reservations(world, [(key, qty) for key, qty in reserved.items() if world.is_legacy(owner[key])])
     for company_id in world.extension_company_ids():
         with world.company_stream(world.key_of(company_id), "reservations"):
             apply_reservations(world, [(key, qty) for key, qty in reserved.items() if owner[key] == company_id])
+    for key, quantity in held.items():
+        inventory = world.inventory[key]
+        inventory["reserved_quantity"] = (reserved[key] if key in reserved else 0) + quantity
+        if inventory["quantity"] < inventory["reserved_quantity"]:
+            inventory["quantity"] = inventory["reserved_quantity"] + int(inventory["restock_target"]
+                                                                         * HELD_RESTOCK_SHARE)
 
 
 def apply_reservations(world: World, reserved: list[tuple[tuple[int, int], int]]) -> None:

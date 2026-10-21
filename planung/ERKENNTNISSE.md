@@ -45,3 +45,4 @@ Die Seeds 7 und 123 bestehen ebenfalls alle Prüfungen. Alle 115.705 Bestandszei
 - Dashboard zeigt noch den Stand mit 6 Firmen und kennt weder Rahmenverträge noch Schriftverkehr.
 - Größenbeschriftung MB/MiB im Skript.
 - Branch `erweiterung-18-firmen` ist noch nicht nach `main` gemergt.
+- Jahresendaufträge (Branch `claude/dezember-offene-auftraege`): Spot-Bestellungen der letzten drei Wochen, die vor dem Stichtag ankämen, bleiben bestätigt und fliegen erst nach dem 1.1.2060 ab. Damit entfällt die Ergebnisspitze im Dezember 2059. Gewollt ändern sich dadurch auch Bestellungen, Lieferungen, Lager, Lagerkapazitäten, der letzte Preispunkt, Monatsabschlüsse und Schreiben der Bestandsfirmen. Die Zufallsströme bleiben gleich. Noch nicht ausgeführt: nach dem ersten Lauf die Bestandsreferenz (`../bestand/space_trading_game_bestand.db`) neu erzeugen, sonst meldet der Bestandsvergleich diese Änderungen.
