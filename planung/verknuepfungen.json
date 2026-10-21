@@ -1,0 +1,2161 @@
+{
+ "meta": {
+  "stand": "2026-10-20",
+  "phase": 2,
+  "entscheidung": "planung/phase2_entscheidung.md",
+  "basis": "Bestand Seed 42, /home/user/bestand/space_trading_game_bestand.db",
+  "active_agreements_total": 48,
+  "note_partnerships": "13 Bestand-Blueprint + 34 neue Kanten; helix->corvane bleibt in optional_partnerships (im Bestand gewürfelt aktiv)"
+ },
+ "partnerships": [
+  [
+   "eisenkrone",
+   "helix",
+   "supply_agreement"
+  ],
+  [
+   "helix",
+   "eisenkrone",
+   "strategic_alliance"
+  ],
+  [
+   "helix",
+   "lichtacker",
+   "distribution_agreement"
+  ],
+  [
+   "lichtacker",
+   "helix",
+   "supply_agreement"
+  ],
+  [
+   "corvane",
+   "helix",
+   "licensing"
+  ],
+  [
+   "feldspat",
+   "helix",
+   "consignment"
+  ],
+  [
+   "driftwood",
+   "helix",
+   "consignment"
+  ],
+  [
+   "feldspat",
+   "eisenkrone",
+   "supply_agreement"
+  ],
+  [
+   "eisenkrone",
+   "feldspat",
+   "supply_agreement"
+  ],
+  [
+   "eisenkrone",
+   "lichtacker",
+   "supply_agreement"
+  ],
+  [
+   "corvane",
+   "eisenkrone",
+   "supply_agreement"
+  ],
+  [
+   "eisenkrone",
+   "corvane",
+   "joint_venture"
+  ],
+  [
+   "lichtacker",
+   "corvane",
+   "supply_agreement"
+  ],
+  [
+   "graufalk",
+   "helix",
+   "supply_agreement"
+  ],
+  [
+   "cindervale",
+   "eisenkrone",
+   "supply_agreement"
+  ],
+  [
+   "kuppelwerk",
+   "lichtacker",
+   "supply_agreement"
+  ],
+  [
+   "emberline",
+   "corvane",
+   "supply_agreement"
+  ],
+  [
+   "emberline",
+   "lichtacker",
+   "supply_agreement"
+  ],
+  [
+   "raureif",
+   "eisenkrone",
+   "supply_agreement"
+  ],
+  [
+   "ravenmoor",
+   "helix",
+   "logistics_partnership"
+  ],
+  [
+   "cindervale",
+   "graufalk",
+   "supply_agreement"
+  ],
+  [
+   "graufalk",
+   "cindervale",
+   "strategic_alliance"
+  ],
+  [
+   "emberline",
+   "graufalk",
+   "supply_agreement"
+  ],
+  [
+   "graufalk",
+   "emberline",
+   "supply_agreement"
+  ],
+  [
+   "kuppelwerk",
+   "graufalk",
+   "supply_agreement"
+  ],
+  [
+   "emberline",
+   "kuppelwerk",
+   "supply_agreement"
+  ],
+  [
+   "emberline",
+   "cindervale",
+   "supply_agreement"
+  ],
+  [
+   "cindervale",
+   "kometenpost",
+   "consignment"
+  ],
+  [
+   "kometenpost",
+   "cindervale",
+   "logistics_partnership"
+  ],
+  [
+   "cindervale",
+   "lanternfish",
+   "supply_agreement"
+  ],
+  [
+   "lanternfish",
+   "graufalk",
+   "supply_agreement"
+  ],
+  [
+   "lanternfish",
+   "kometenpost",
+   "consignment"
+  ],
+  [
+   "raureif",
+   "pionierwerk",
+   "supply_agreement"
+  ],
+  [
+   "pionierwerk",
+   "morgengrund",
+   "supply_agreement"
+  ],
+  [
+   "morgengrund",
+   "pionierwerk",
+   "supply_agreement"
+  ],
+  [
+   "ravenmoor",
+   "pionierwerk",
+   "logistics_partnership"
+  ],
+  [
+   "pionierwerk",
+   "ravenmoor",
+   "supply_agreement"
+  ],
+  [
+   "outmark",
+   "pionierwerk",
+   "licensing"
+  ],
+  [
+   "second_hull",
+   "pionierwerk",
+   "supply_agreement"
+  ],
+  [
+   "second_hull",
+   "ravenmoor",
+   "consignment"
+  ],
+  [
+   "raureif",
+   "ravenmoor",
+   "supply_agreement"
+  ],
+  [
+   "ravenmoor",
+   "outmark",
+   "logistics_partnership"
+  ],
+  [
+   "morgengrund",
+   "ravenmoor",
+   "supply_agreement"
+  ],
+  [
+   "outmark",
+   "raureif",
+   "supply_agreement"
+  ],
+  [
+   "kuppelwerk",
+   "pionierwerk",
+   "supply_agreement"
+  ],
+  [
+   "second_hull",
+   "graufalk",
+   "supply_agreement"
+  ],
+  [
+   "graufalk",
+   "ravenmoor",
+   "supply_agreement"
+  ]
+ ],
+ "optional_partnerships": [
+  [
+   "helix",
+   "corvane",
+   "logistics_partnership",
+   0.6
+  ]
+ ],
+ "historic": [
+  [
+   "corvane",
+   "driftwood",
+   "supply_agreement"
+  ],
+  [
+   "eisenkrone",
+   "graufalk",
+   "supply_agreement"
+  ],
+  [
+   "cindervale",
+   "helix",
+   "licensing"
+  ],
+  [
+   "lichtacker",
+   "pionierwerk",
+   "supply_agreement"
+  ],
+  [
+   "emberline",
+   "eisenkrone",
+   "supply_agreement"
+  ],
+  [
+   "outmark",
+   "feldspat",
+   "licensing"
+  ],
+  [
+   "driftwood",
+   "second_hull",
+   "consignment"
+  ]
+ ],
+ "historic_details": [
+  {
+   "seller_key": "corvane",
+   "buyer_key": "driftwood",
+   "type": "supply_agreement",
+   "source": "bestand",
+   "dates": "Bestand 2057-04-27 bis 2058-07-17, unverändert (Bestandsstrom)"
+  },
+  {
+   "seller_key": "eisenkrone",
+   "buyer_key": "graufalk",
+   "type": "supply_agreement",
+   "start_date": "2039-01-01",
+   "end_date": "2049-06-30",
+   "hook": "Ausgliederung der Werftsparte Orrin; Patentstreit Reaktorkomponenten"
+  },
+  {
+   "seller_key": "cindervale",
+   "buyer_key": "helix",
+   "type": "licensing",
+   "start_date": "2041-04-01",
+   "end_date": "2054-03-31",
+   "hook": "Helix verliert die Cindervale-Lizenz und bezieht Hochtechnologie seither über Kharon"
+  },
+  {
+   "seller_key": "lichtacker",
+   "buyer_key": "pionierwerk",
+   "type": "supply_agreement",
+   "start_date": "2045-03-01",
+   "end_date": "2053-06-30",
+   "hook": "Versorgung der Isolde-Bautrupps bis zum Pachtstreit"
+  },
+  {
+   "seller_key": "emberline",
+   "buyer_key": "eisenkrone",
+   "type": "supply_agreement",
+   "start_date": "2047-02-01",
+   "end_date": "2056-06-30",
+   "hook": "Helium-3 für Bergbaustation Hande; endete mit eigener Deuteriumförderung von Eisenkrone"
+  },
+  {
+   "seller_key": "outmark",
+   "buyer_key": "feldspat",
+   "type": "licensing",
+   "start_date": "2055-02-01",
+   "end_date": "2058-06-30",
+   "hook": "Vermessungsdaten Brennus; ein Jahr später Fund 52 bei Becker"
+  },
+  {
+   "seller_key": "driftwood",
+   "buyer_key": "second_hull",
+   "type": "consignment",
+   "start_date": "2057-05-01",
+   "end_date": "2058-07-01",
+   "hook": "Bergegut aus Nyx; Bruch zwei Tage nach Razzia 26"
+  }
+ ],
+ "rivalries": [
+  [
+   "eisenkrone",
+   "helix",
+   "market_dominance",
+   "sol"
+  ],
+  [
+   "driftwood",
+   "corvane",
+   "industrial_espionage",
+   "halcyon"
+  ],
+  [
+   "feldspat",
+   "driftwood",
+   "territorial_claims",
+   "kharon"
+  ],
+  [
+   "lichtacker",
+   "eisenkrone",
+   "resource_competition",
+   "myrrhen"
+  ],
+  [
+   "graufalk",
+   "eisenkrone",
+   "market_dominance",
+   "halcyon"
+  ],
+  [
+   "cindervale",
+   "helix",
+   "market_dominance",
+   "sol"
+  ],
+  [
+   "emberline",
+   "eisenkrone",
+   "resource_competition",
+   "myrrhen"
+  ],
+  [
+   "lichtacker",
+   "pionierwerk",
+   "territorial_claims",
+   "isolde"
+  ],
+  [
+   "ravenmoor",
+   "driftwood",
+   "armed_conflict",
+   "nyx"
+  ],
+  [
+   "outmark",
+   "feldspat",
+   "territorial_claims",
+   "brennus"
+  ],
+  [
+   "ravenmoor",
+   "helix",
+   "market_dominance",
+   "kharon"
+  ],
+  [
+   "second_hull",
+   "driftwood",
+   "territorial_claims",
+   "nyx"
+  ]
+ ],
+ "rivalry_details": [
+  {
+   "company_key": "eisenkrone",
+   "rival_key": "helix",
+   "type": "market_dominance",
+   "system": "sol",
+   "source": "bestand"
+  },
+  {
+   "company_key": "driftwood",
+   "rival_key": "corvane",
+   "type": "industrial_espionage",
+   "system": "halcyon",
+   "source": "bestand"
+  },
+  {
+   "company_key": "feldspat",
+   "rival_key": "driftwood",
+   "type": "territorial_claims",
+   "system": "kharon",
+   "source": "bestand"
+  },
+  {
+   "company_key": "lichtacker",
+   "rival_key": "eisenkrone",
+   "type": "resource_competition",
+   "system": "myrrhen",
+   "source": "bestand"
+  },
+  {
+   "company_key": "graufalk",
+   "rival_key": "eisenkrone",
+   "type": "market_dominance",
+   "system": "halcyon",
+   "since_date": "2049-07-01",
+   "intensity": 70,
+   "espionage_risk": 55,
+   "anchor_events": [
+    19,
+    36,
+    70
+   ],
+   "anchor_contracts": [
+    "EKM-VTR-2057-0064"
+   ],
+   "informants": [
+    170,
+    178
+   ]
+  },
+  {
+   "company_key": "cindervale",
+   "rival_key": "helix",
+   "type": "market_dominance",
+   "system": "sol",
+   "since_date": "2054-04-01",
+   "intensity": 65,
+   "espionage_risk": 50,
+   "anchor_events": [
+    3,
+    24
+   ],
+   "anchor_contracts": [
+    "HMX-CTR-2057-0050",
+    "HMX-CTR-2058-0121"
+   ],
+   "informants": [
+    299,
+    120
+   ]
+  },
+  {
+   "company_key": "emberline",
+   "rival_key": "eisenkrone",
+   "type": "resource_competition",
+   "system": "myrrhen",
+   "since_date": "2058-08-15",
+   "intensity": 55,
+   "espionage_risk": 40,
+   "text_override": true,
+   "anchor_contracts": [
+    "EKM-VTR-2058-0099",
+    "EKM-VTR-2058-0105",
+    "EKM-VTR-2059-0167"
+   ],
+   "informants": [
+    83,
+    45
+   ]
+  },
+  {
+   "company_key": "lichtacker",
+   "rival_key": "pionierwerk",
+   "type": "territorial_claims",
+   "system": "isolde",
+   "since_date": "2053-07-01",
+   "intensity": 60,
+   "espionage_risk": 55,
+   "text_override": true,
+   "informants": [
+    43
+   ]
+  },
+  {
+   "company_key": "ravenmoor",
+   "rival_key": "driftwood",
+   "type": "armed_conflict",
+   "system": "nyx",
+   "since_date": "2058-06-30",
+   "intensity": 85,
+   "espionage_risk": 70,
+   "anchor_events": [
+    26,
+    58,
+    45,
+    54,
+    57,
+    67
+   ],
+   "informants": [
+    29,
+    33
+   ]
+  },
+  {
+   "company_key": "outmark",
+   "rival_key": "feldspat",
+   "type": "territorial_claims",
+   "system": "brennus",
+   "since_date": "2059-07-14",
+   "intensity": 65,
+   "espionage_risk": 80,
+   "anchor_events": [
+    52
+   ],
+   "informants": [
+    16
+   ]
+  },
+  {
+   "company_key": "ravenmoor",
+   "rival_key": "helix",
+   "type": "market_dominance",
+   "system": "kharon",
+   "since_date": "2057-11-17",
+   "intensity": 55,
+   "espionage_risk": 45,
+   "anchor_events": [
+    16,
+    26
+   ],
+   "informants": [
+    302,
+    395,
+    445
+   ]
+  },
+  {
+   "company_key": "second_hull",
+   "rival_key": "driftwood",
+   "type": "territorial_claims",
+   "system": "nyx",
+   "since_date": "2058-07-01",
+   "intensity": 50,
+   "espionage_risk": 40,
+   "anchor_events": [
+    54
+   ],
+   "informants": [
+    27
+   ]
+  }
+ ],
+ "new_rivalry_types": {
+  "armed_conflict": {
+   "intensity": [
+    60,
+    90
+   ],
+   "texts": "wie phase1_team_b.md"
+  }
+ },
+ "rivalry_text_overrides": {
+  "emberline-eisenkrone": {
+   "de_DE": "{company} und {rival} liefern beide Energie ins {system}-System und unterbieten sich bei jedem Liefervertrag.",
+   "en_US": "{company} and {rival} both supply energy to the {system} system and undercut each other on every supply contract."
+  },
+  "lichtacker-pionierwerk": {
+   "de_DE": "Streit um Pachtrechte im {system}-System: {company} hält {rival} vor, alte Pachtverträge für Makulatur erklärt zu haben.",
+   "en_US": "A dispute over lease rights in the {system} system: {company} accuses {rival} of tearing up old lease contracts."
+  }
+ },
+ "framework_schema": {
+  "framework_agreements": [
+   "framework_agreement_id",
+   "agreement_number UNIQUE",
+   "partnership_id",
+   "company_id (Verkäufer)",
+   "partner_company_id (Käufer)",
+   "title",
+   "language",
+   "signed_date",
+   "start_date",
+   "term_months",
+   "original_end_date",
+   "current_end_date",
+   "status ('negotiating','active','suspended','expired','terminated')",
+   "base_volume",
+   "current_volume_cap",
+   "price_formula ('fixed','index_linked','cost_plus','market_minus')",
+   "indexation ('none','category_price_index','fuel_index','risk_index')",
+   "price_index_category",
+   "base_discount_pct",
+   "cost_plus_pct",
+   "adjustment_cap_pct",
+   "exclusivity ('none','right_of_first_refusal','buyer_exclusive','seller_exclusive','mutual','regional_exclusive')",
+   "exclusivity_system_id",
+   "notice_period_days",
+   "auto_renewal",
+   "renewal_months",
+   "penalty_rate_pct",
+   "escort_company_id",
+   "seller_signatory_id",
+   "buyer_signatory_id",
+   "description"
+  ],
+  "framework_agreement_scope": [
+   "scope_id",
+   "framework_agreement_id",
+   "category_code",
+   "archetype_code (NULL = ganze Kategorie)",
+   "system_id (NULL = alle)",
+   "valid_from",
+   "valid_to",
+   "is_exclusive",
+   "added_by_amendment_id",
+   "removed_by_amendment_id"
+  ],
+  "framework_amendments": [
+   "amendment_id",
+   "framework_agreement_id",
+   "amendment_no",
+   "amendment_number ({agreement_number}/N{k} de, /A{k} en)",
+   "amendment_type",
+   "status ('proposed','signed','rejected','withdrawn')",
+   "proposed_date (<= 2059-12-31)",
+   "signed_date",
+   "effective_date",
+   "initiated_by_company_id",
+   "volume_after",
+   "price_change_pct",
+   "end_date_after",
+   "category_code",
+   "archetype_code",
+   "exclusive_system_id",
+   "escort_company_id",
+   "trigger_contract_id",
+   "trigger_order_id",
+   "trigger_event_id",
+   "description"
+  ],
+  "amendment_types": [
+   "volume_increase",
+   "volume_reduction",
+   "product_addition",
+   "product_removal",
+   "price_adjustment",
+   "term_extension",
+   "exclusivity_clause",
+   "exclusivity_waiver",
+   "penalty_clause",
+   "service_level_clause",
+   "escort_clause",
+   "force_majeure_clause",
+   "competition_clause",
+   "confidentiality_clause",
+   "scope_extension",
+   "partial_termination",
+   "suspension"
+  ],
+  "contracts_new_column": "framework_agreement_id INTEGER REFERENCES framework_agreements (NULL = außerhalb)",
+  "assignment_rule": "gleiches Paar; contract_type IN (framework, recurring_supply, exclusive_supply); start_date zwischen Rahmenbeginn und dem zu diesem Zeitpunkt gültigen Ende; Kategorie/Archetyp am start_date im Scope; rein deterministisch",
+  "numbering": "agreement_number fest aus diesem JSON; amendment_no fortlaufend nach proposed_date (bei 'rule' nach effective_date)",
+  "rule_amendments": {
+   "first_contract_of_category": "Monatserster vor dem ersten Abrufvertrag der Kategorie",
+   "cumulative_over_90pct": "kumulierte Summe (ohne storniert) > 90 % der Obergrenze -> Erhöhung zum Monatsersten des auslösenden Vertrags; Auslöser 2060 -> proposed, angeboten im Dezember 2059",
+   "calloff_after_end": "Abruf beginnt nach Laufzeitende -> Verlängerung, wirksam 60 Tage vor Ablauf"
+  },
+  "new_pairs_contract_rule": "vor Rahmenbeginn nur spot/emergency_supply/consignment; danach bisherige Gewichte; framework-Typen nur für Waren im Scope"
+ },
+ "framework_agreements": [
+  {
+   "number": "HMX-MSA-2057-01",
+   "seller_key": "helix",
+   "buyer_key": "lichtacker",
+   "title": "Distribution Framework Agreement Agricultural Rings Tauvel, Aurelis & Myrrhen",
+   "start_date": "2057-01-01",
+   "start_year": 2057,
+   "term_months": 36,
+   "base_volume_mcr": 250,
+   "price_formula": "index_linked",
+   "indexation": "category_price_index",
+   "exclusivity": "right_of_first_refusal",
+   "notice_days": 180,
+   "scope": [
+    "luxury",
+    "food",
+    "industrial_goods"
+   ],
+   "existing_pair": true,
+   "adjustment_cap_pct": 8,
+   "exclusive_categories": [
+    "industrial_goods"
+   ],
+   "expected_assigned_contracts": 54,
+   "amendments": [
+    {
+     "type": "product_addition",
+     "effective_date": "2057-04-01",
+     "status": "signed",
+     "categories": [
+      "energy",
+      "technology"
+     ],
+     "rule": "first_contract_of_category"
+    },
+    {
+     "type": "product_addition",
+     "effective_date": "2057-09-01",
+     "status": "signed",
+     "categories": [
+      "medical"
+     ],
+     "rule": "first_contract_of_category"
+    },
+    {
+     "type": "penalty_clause",
+     "effective_date": "2058-03-14",
+     "status": "signed",
+     "proposed_date": "2058-02-20",
+     "initiated_by": "lichtacker",
+     "anchor_contracts": [
+      "HMX-CTR-2057-0043"
+     ]
+    },
+    {
+     "type": "volume_increase",
+     "effective_date": "2058-09-01",
+     "status": "signed",
+     "volume_after_mcr": 400,
+     "anchor_contracts": [
+      "HMX-CTR-2058-0161"
+     ],
+     "rule": "cumulative_over_90pct"
+    },
+    {
+     "type": "exclusivity_waiver",
+     "effective_date": "2059-03-15",
+     "status": "signed",
+     "proposed_date": "2059-03-10",
+     "initiated_by": "lichtacker",
+     "categories": [
+      "industrial_goods"
+     ],
+     "anchor_contracts": [
+      "HMX-CTR-2057-0043",
+      "HMX-CTR-2058-0139",
+      "HMX-CTR-2058-0159"
+     ]
+    },
+    {
+     "type": "volume_increase",
+     "effective_date": "2059-10-01",
+     "status": "signed",
+     "volume_after_mcr": 550,
+     "anchor_contracts": [
+      "HMX-CTR-2059-0259"
+     ],
+     "rule": "cumulative_over_90pct"
+    },
+    {
+     "type": "term_extension",
+     "effective_date": "2059-11-01",
+     "status": "signed",
+     "new_end_date": "2060-12-31",
+     "initiated_by": "lichtacker",
+     "rule": "calloff_after_end"
+    }
+   ]
+  },
+  {
+   "number": "HMX-MSA-2057-02",
+   "seller_key": "helix",
+   "buyer_key": "corvane",
+   "title": "Logistics & Supply Master Agreement Halcyon/Aurelis",
+   "start_date": "2057-01-01",
+   "start_year": 2057,
+   "term_months": 36,
+   "base_volume_mcr": 300,
+   "price_formula": "market_minus",
+   "indexation": "category_price_index",
+   "exclusivity": "none",
+   "notice_days": 120,
+   "scope": [
+    "luxury",
+    "raw_materials"
+   ],
+   "existing_pair": true,
+   "base_discount_pct": 4,
+   "expected_assigned_contracts": 68,
+   "amendments": [
+    {
+     "type": "product_addition",
+     "effective_date": "2057-03-01",
+     "status": "signed",
+     "categories": [
+      "technology"
+     ],
+     "rule": "first_contract_of_category"
+    },
+    {
+     "type": "product_addition",
+     "effective_date": "2057-05-01",
+     "status": "signed",
+     "categories": [
+      "energy"
+     ],
+     "rule": "first_contract_of_category"
+    },
+    {
+     "type": "exclusivity_clause",
+     "effective_date": "2057-05-01",
+     "status": "signed",
+     "initiated_by": "helix",
+     "exclusivity": "buyer_exclusive",
+     "categories": [
+      "energy"
+     ]
+    },
+    {
+     "type": "product_addition",
+     "effective_date": "2058-01-01",
+     "status": "signed",
+     "categories": [
+      "industrial_goods"
+     ],
+     "rule": "first_contract_of_category"
+    },
+    {
+     "type": "volume_increase",
+     "effective_date": "2058-08-01",
+     "status": "signed",
+     "volume_after_mcr": 450,
+     "anchor_contracts": [
+      "HMX-CTR-2058-0152"
+     ],
+     "rule": "cumulative_over_90pct"
+    },
+    {
+     "type": "product_removal",
+     "effective_date": "2059-03-15",
+     "status": "signed",
+     "proposed_date": "2059-03-13",
+     "initiated_by": "corvane",
+     "archetypes": [
+      "helium3"
+     ],
+     "anchor_contracts": [
+      "HMX-CTR-2058-0131",
+      "HMX-CTR-2057-0014"
+     ],
+     "anchor_events": [
+      30
+     ]
+    },
+    {
+     "type": "exclusivity_waiver",
+     "effective_date": "2059-03-15",
+     "status": "signed",
+     "proposed_date": "2059-03-13",
+     "initiated_by": "corvane",
+     "categories": [
+      "energy"
+     ],
+     "anchor_contracts": [
+      "HMX-CTR-2058-0131"
+     ]
+    },
+    {
+     "type": "volume_increase",
+     "effective_date": "2059-04-01",
+     "status": "signed",
+     "volume_after_mcr": 600,
+     "anchor_contracts": [
+      "HMX-CTR-2059-0213"
+     ],
+     "rule": "cumulative_over_90pct"
+    },
+    {
+     "type": "term_extension",
+     "effective_date": "2059-11-01",
+     "status": "signed",
+     "new_end_date": "2060-12-31",
+     "initiated_by": "corvane",
+     "rule": "calloff_after_end"
+    },
+    {
+     "type": "volume_increase",
+     "effective_date": "2060-02-01",
+     "status": "proposed",
+     "proposed_date": "2059-12-15",
+     "volume_after_mcr": 750,
+     "anchor_contracts": [
+      "HMX-CTR-2060-0281"
+     ],
+     "rule": "cumulative_over_90pct"
+    }
+   ]
+  },
+  {
+   "number": "HMX-MSA-2057-03",
+   "seller_key": "helix",
+   "buyer_key": "eisenkrone",
+   "title": "Strategic Supply Framework Sol/Halcyon/Brennus",
+   "start_date": "2057-01-01",
+   "start_year": 2057,
+   "term_months": 48,
+   "base_volume_mcr": 300,
+   "price_formula": "cost_plus",
+   "indexation": "category_price_index",
+   "exclusivity": "none",
+   "notice_days": 360,
+   "scope": [
+    "food",
+    "raw_materials",
+    "energy"
+   ],
+   "existing_pair": true,
+   "cost_plus_pct": 9,
+   "expected_assigned_contracts": 75,
+   "amendments": [
+    {
+     "type": "product_addition",
+     "effective_date": "2057-07-01",
+     "status": "signed",
+     "categories": [
+      "medical",
+      "technology",
+      "industrial_goods"
+     ],
+     "rule": "first_contract_of_category"
+    },
+    {
+     "type": "volume_reduction",
+     "effective_date": "2058-03-01",
+     "status": "signed",
+     "proposed_date": "2058-02-15",
+     "initiated_by": "eisenkrone",
+     "volume_after_mcr": 250,
+     "anchor_events": [
+      19
+     ]
+    },
+    {
+     "type": "volume_increase",
+     "effective_date": "2059-01-01",
+     "status": "signed",
+     "volume_after_mcr": 350,
+     "anchor_contracts": [
+      "HMX-CTR-2059-0192"
+     ],
+     "rule": "cumulative_over_90pct"
+    },
+    {
+     "type": "volume_increase",
+     "effective_date": "2059-06-01",
+     "status": "signed",
+     "volume_after_mcr": 450,
+     "anchor_contracts": [
+      "HMX-CTR-2059-0236"
+     ],
+     "rule": "cumulative_over_90pct"
+    },
+    {
+     "type": "volume_increase",
+     "effective_date": "2060-01-01",
+     "status": "proposed",
+     "proposed_date": "2059-12-10",
+     "volume_after_mcr": 550,
+     "anchor_contracts": [
+      "HMX-CTR-2060-0275"
+     ],
+     "rule": "cumulative_over_90pct"
+    }
+   ]
+  },
+  {
+   "number": "EKM-RV-2057-01",
+   "seller_key": "eisenkrone",
+   "buyer_key": "corvane",
+   "title": "Joint-Venture-Liefervertrag Halcyon",
+   "start_date": "2057-01-01",
+   "start_year": 2057,
+   "term_months": 60,
+   "base_volume_mcr": 350,
+   "price_formula": "cost_plus",
+   "indexation": "category_price_index",
+   "exclusivity": "right_of_first_refusal",
+   "notice_days": 360,
+   "scope": [
+    "raw_materials",
+    "industrial_goods"
+   ],
+   "existing_pair": true,
+   "cost_plus_pct": 12,
+   "exclusive_categories": [
+    "raw_materials"
+   ],
+   "expected_assigned_contracts": 65,
+   "amendments": [
+    {
+     "type": "product_addition",
+     "effective_date": "2057-05-01",
+     "status": "signed",
+     "categories": [
+      "luxury",
+      "technology"
+     ],
+     "rule": "first_contract_of_category"
+    },
+    {
+     "type": "penalty_clause",
+     "effective_date": "2058-05-01",
+     "status": "signed",
+     "proposed_date": "2058-04-28",
+     "initiated_by": "corvane",
+     "anchor_contracts": [
+      "EKM-VTR-2057-0064"
+     ]
+    },
+    {
+     "type": "volume_increase",
+     "effective_date": "2059-03-01",
+     "status": "signed",
+     "volume_after_mcr": 450,
+     "anchor_contracts": [
+      "EKM-VTR-2059-0160"
+     ],
+     "rule": "cumulative_over_90pct"
+    },
+    {
+     "type": "service_level_clause",
+     "effective_date": "2060-02-01",
+     "status": "proposed",
+     "proposed_date": "2059-12-23",
+     "initiated_by": "corvane",
+     "anchor_contracts": [
+      "EKM-VTR-2059-0160"
+     ]
+    },
+    {
+     "type": "volume_increase",
+     "effective_date": "2060-01-01",
+     "status": "proposed",
+     "proposed_date": "2059-12-10",
+     "volume_after_mcr": 550,
+     "anchor_contracts": [
+      "EKM-VTR-2060-0219"
+     ],
+     "rule": "cumulative_over_90pct"
+    }
+   ]
+  },
+  {
+   "number": "EKM-RV-2057-02",
+   "seller_key": "eisenkrone",
+   "buyer_key": "helix",
+   "title": "Rahmenvertrag Erze und Energie Brennus/Halcyon – Kharon/Sol",
+   "start_date": "2057-01-01",
+   "start_year": 2057,
+   "term_months": 42,
+   "base_volume_mcr": 200,
+   "price_formula": "index_linked",
+   "indexation": "category_price_index",
+   "exclusivity": "none",
+   "notice_days": 180,
+   "scope": [
+    "energy",
+    "raw_materials"
+   ],
+   "existing_pair": true,
+   "price_index_category": "raw_materials",
+   "adjustment_cap_pct": 10,
+   "expected_assigned_contracts": 39,
+   "amendments": [
+    {
+     "type": "product_addition",
+     "effective_date": "2057-06-01",
+     "status": "signed",
+     "categories": [
+      "food",
+      "technology"
+     ],
+     "rule": "first_contract_of_category"
+    },
+    {
+     "type": "product_addition",
+     "effective_date": "2058-01-01",
+     "status": "signed",
+     "categories": [
+      "industrial_goods"
+     ],
+     "rule": "first_contract_of_category"
+    },
+    {
+     "type": "penalty_clause",
+     "effective_date": "2058-01-09",
+     "status": "signed",
+     "proposed_date": "2057-12-20",
+     "initiated_by": "helix",
+     "anchor_contracts": [
+      "EKM-VTR-2057-0017"
+     ]
+    },
+    {
+     "type": "product_addition",
+     "effective_date": "2058-08-01",
+     "status": "signed",
+     "categories": [
+      "luxury"
+     ],
+     "rule": "first_contract_of_category"
+    },
+    {
+     "type": "volume_increase",
+     "effective_date": "2059-02-01",
+     "status": "signed",
+     "volume_after_mcr": 300,
+     "anchor_contracts": [
+      "EKM-VTR-2059-0151"
+     ],
+     "rule": "cumulative_over_90pct"
+    },
+    {
+     "type": "escort_clause",
+     "effective_date": "2060-02-01",
+     "status": "proposed",
+     "proposed_date": "2059-12-22",
+     "initiated_by": "helix",
+     "escort_key": "ravenmoor",
+     "anchor_contracts": [
+      "EKM-VTR-2057-0017",
+      "EKM-VTR-2058-0107",
+      "EKM-VTR-2059-0162"
+     ],
+     "anchor_orders": [
+      "EKM-BST-2059-02343"
+     ],
+     "anchor_events": [
+      74
+     ],
+     "linked_amendment": "RCS-MSA-2058-01#escort_clause"
+    },
+    {
+     "type": "volume_increase",
+     "effective_date": "2060-02-01",
+     "status": "proposed",
+     "proposed_date": "2059-12-22",
+     "volume_after_mcr": 400,
+     "anchor_contracts": [
+      "EKM-VTR-2060-0234"
+     ],
+     "rule": "cumulative_over_90pct"
+    },
+    {
+     "type": "term_extension",
+     "effective_date": "2060-07-01",
+     "status": "proposed",
+     "proposed_date": "2059-12-22",
+     "new_end_date": "2061-06-30",
+     "initiated_by": "helix"
+    }
+   ]
+  },
+  {
+   "number": "EKM-RV-2057-03",
+   "seller_key": "eisenkrone",
+   "buyer_key": "lichtacker",
+   "title": "Liefervertrag Industriegüter und Energie Myrrhen/Tauvel",
+   "start_date": "2057-01-01",
+   "start_year": 2057,
+   "term_months": 36,
+   "base_volume_mcr": 150,
+   "price_formula": "index_linked",
+   "indexation": "category_price_index",
+   "exclusivity": "none",
+   "notice_days": 90,
+   "scope": [
+    "industrial_goods",
+    "luxury",
+    "raw_materials"
+   ],
+   "existing_pair": true,
+   "price_index_category": "energy",
+   "adjustment_cap_pct": 6,
+   "expected_assigned_contracts": 35,
+   "expected_outside": [
+    "EKM-VTR-2060-0230"
+   ],
+   "amendments": [
+    {
+     "type": "product_addition",
+     "effective_date": "2057-08-01",
+     "status": "signed",
+     "categories": [
+      "energy"
+     ],
+     "rule": "first_contract_of_category"
+    },
+    {
+     "type": "product_addition",
+     "effective_date": "2058-02-01",
+     "status": "signed",
+     "categories": [
+      "technology"
+     ],
+     "rule": "first_contract_of_category"
+    },
+    {
+     "type": "penalty_clause",
+     "effective_date": "2058-09-14",
+     "status": "signed",
+     "proposed_date": "2058-08-28",
+     "initiated_by": "lichtacker",
+     "anchor_contracts": [
+      "EKM-VTR-2058-0099"
+     ]
+    },
+    {
+     "type": "partial_termination",
+     "effective_date": "2060-01-18",
+     "status": "signed",
+     "proposed_date": "2059-10-20",
+     "initiated_by": "lichtacker",
+     "categories": [
+      "energy"
+     ],
+     "anchor_contracts": [
+      "EKM-VTR-2059-0167",
+      "EKM-VTR-2058-0105",
+      "EKM-VTR-2058-0099"
+     ],
+     "note": "laufende Energieabrufe (EKM-VTR-2059-0197) werden bis zur Frist erfüllt; EKM-VTR-2060-0230 (Entwurf) liegt außerhalb des Rahmens"
+    },
+    {
+     "type": "price_adjustment",
+     "effective_date": "2060-01-18",
+     "status": "rejected",
+     "proposed_date": "2059-10-28",
+     "initiated_by": "eisenkrone",
+     "pct": -5,
+     "categories": [
+      "energy"
+     ],
+     "note": "Rettungsangebot Eisenkrone, von Lichtacker am 2059-11-10 abgelehnt"
+    },
+    {
+     "type": "volume_increase",
+     "effective_date": "2059-11-01",
+     "status": "signed",
+     "volume_after_mcr": 200,
+     "anchor_contracts": [
+      "EKM-VTR-2059-0211"
+     ],
+     "rule": "cumulative_over_90pct"
+    },
+    {
+     "type": "term_extension",
+     "effective_date": "2059-11-01",
+     "status": "signed",
+     "new_end_date": "2060-12-31",
+     "initiated_by": "lichtacker",
+     "rule": "calloff_after_end",
+     "note": "nur Restumfang ohne Energie"
+    }
+   ]
+  },
+  {
+   "number": "FSP-RV-2059-01",
+   "seller_key": "feldspat",
+   "buyer_key": "eisenkrone",
+   "title": "Abnahmerahmen Quantenquarz Becker",
+   "start_date": "2059-08-01",
+   "start_year": 2059,
+   "term_months": 24,
+   "base_volume_mcr": 12,
+   "price_formula": "market_minus",
+   "indexation": "category_price_index",
+   "exclusivity": "right_of_first_refusal",
+   "notice_days": 90,
+   "scope": [
+    "raw_materials"
+   ],
+   "existing_pair": true,
+   "base_discount_pct": 5,
+   "exclusive_archetypes": [
+    "quantum_quartz"
+   ],
+   "expected_assigned_contracts": 5,
+   "story": "Feldspat schuldet Eisenkrone 25,5 Mio. CR (13 überfällige Bestellungen); das Vorkaufsrecht auf Quantenquarz ist das Pfand",
+   "amendments": [
+    {
+     "type": "price_adjustment",
+     "effective_date": "2059-11-20",
+     "status": "signed",
+     "proposed_date": "2059-11-05",
+     "initiated_by": "feldspat",
+     "pct": 12,
+     "anchor_events": [
+      65,
+      66
+     ],
+     "anchor_contracts": [
+      "FSP-VTR-2059-0019"
+     ],
+     "note": "nach Stornierung des Abrufvertrags FSP-VTR-2059-0019 im Preisstreit"
+    },
+    {
+     "type": "volume_increase",
+     "effective_date": "2060-01-15",
+     "status": "proposed",
+     "proposed_date": "2059-12-15",
+     "volume_after_mcr": 20,
+     "initiated_by": "feldspat"
+    }
+   ]
+  },
+  {
+   "number": "GFW-RV-2057-01",
+   "seller_key": "graufalk",
+   "buyer_key": "helix",
+   "title": "Flottenrahmenvertrag Rumpf- und Triebwerksteile",
+   "start_date": "2057-01-01",
+   "start_year": 2057,
+   "term_months": 48,
+   "base_volume_mcr": 180,
+   "price_formula": "index_linked",
+   "indexation": "category_price_index",
+   "exclusivity": "none",
+   "notice_days": 180,
+   "scope": [
+    "industrial_goods"
+   ],
+   "price_index_category": "industrial_goods",
+   "amendments": [
+    {
+     "type": "product_addition",
+     "effective_date": "rule",
+     "status": "signed",
+     "categories": [
+      "technology"
+     ],
+     "rule": "first_contract_of_category"
+    },
+    {
+     "type": "volume_increase",
+     "effective_date": "2058-12-20",
+     "status": "signed",
+     "proposed_date": "2058-12-16",
+     "initiated_by": "helix",
+     "delta_mcr": 60,
+     "anchor_contracts": [
+      "HMX-CTR-2058-0173"
+     ]
+    },
+    {
+     "type": "service_level_clause",
+     "effective_date": "2060-01-15",
+     "status": "proposed",
+     "proposed_date": "2059-12-28",
+     "initiated_by": "helix",
+     "anchor_orders": [
+      "HMX-ORD-2059-01763",
+      "HMX-ORD-2059-01788"
+     ],
+     "note": "Eilabrufklausel Triebwerksteile"
+    }
+   ]
+  },
+  {
+   "number": "GFW-RV-2057-02",
+   "seller_key": "graufalk",
+   "buyer_key": "cindervale",
+   "title": "Allianzvertrag Navigationsplattform",
+   "start_date": "2057-01-01",
+   "start_year": 2057,
+   "term_months": 60,
+   "base_volume_mcr": 220,
+   "price_formula": "cost_plus",
+   "indexation": "category_price_index",
+   "exclusivity": "none",
+   "notice_days": 365,
+   "scope": [
+    "industrial_goods",
+    "technology"
+   ],
+   "cost_plus_pct": 8,
+   "amendments": [
+    {
+     "type": "exclusivity_clause",
+     "effective_date": "2058-03-15",
+     "status": "signed",
+     "proposed_date": "2058-02-20",
+     "initiated_by": "graufalk",
+     "exclusivity": "mutual",
+     "archetypes": [
+      "drive_parts"
+     ],
+     "anchor_events": [
+      19
+     ],
+     "note": "Cindervale bezieht Triebwerksteile nur von Graufalk; Graufalk bezieht neue Navigationscomputer nur von Cindervale"
+    },
+    {
+     "type": "volume_increase",
+     "effective_date": "rule",
+     "status": "signed",
+     "delta_mcr": 80,
+     "rule": "cumulative_over_90pct"
+    },
+    {
+     "type": "confidentiality_clause",
+     "effective_date": "2060-01-15",
+     "status": "proposed",
+     "proposed_date": "2059-12-29",
+     "initiated_by": "cindervale",
+     "note": "nach der Aussetzung CCI-MSA-2057-01 und dem Gerücht vom 2059-12-27"
+    }
+   ]
+  },
+  {
+   "number": "GFW-RV-2058-01",
+   "seller_key": "graufalk",
+   "buyer_key": "ravenmoor",
+   "title": "Geleitschiff-Rahmenvertrag Kharon/Brennus",
+   "start_date": "2058-07-15",
+   "start_year": 2058,
+   "term_months": 36,
+   "base_volume_mcr": 90,
+   "price_formula": "index_linked",
+   "indexation": "category_price_index",
+   "exclusivity": "right_of_first_refusal",
+   "notice_days": 180,
+   "scope": [
+    "industrial_goods"
+   ],
+   "exclusive_archetypes": [
+    "hull_plating"
+   ],
+   "exclusivity_system": "kharon",
+   "story": "Ravenmoor hat Vorkaufsrecht auf Graufalk-Rumpfplatten für Kharon; Helix bekommt nur, was Ravenmoor ablehnt",
+   "amendments": [
+    {
+     "type": "product_addition",
+     "effective_date": "rule",
+     "status": "signed",
+     "categories": [
+      "technology"
+     ],
+     "rule": "first_contract_of_category"
+    },
+    {
+     "type": "volume_increase",
+     "effective_date": "2059-09-01",
+     "status": "signed",
+     "proposed_date": "2059-08-25",
+     "initiated_by": "ravenmoor",
+     "delta_mcr": 40,
+     "anchor_events": [
+      45,
+      57,
+      58
+     ]
+    }
+   ]
+  },
+  {
+   "number": "CCI-MSA-2057-01",
+   "seller_key": "cindervale",
+   "buyer_key": "eisenkrone",
+   "title": "AI Control & Robotics Framework Agreement",
+   "start_date": "2057-01-01",
+   "start_year": 2057,
+   "term_months": 48,
+   "base_volume_mcr": 120,
+   "price_formula": "fixed",
+   "indexation": "none",
+   "exclusivity": "buyer_exclusive",
+   "notice_days": 180,
+   "scope": [
+    "technology",
+    "industrial_goods"
+   ],
+   "exclusive_categories": [
+    "technology"
+   ],
+   "exclusivity_system": "halcyon",
+   "status_at_reference": "suspended",
+   "amendments": [
+    {
+     "type": "service_level_clause",
+     "effective_date": "2058-03-01",
+     "status": "signed",
+     "proposed_date": "2058-02-10",
+     "initiated_by": "eisenkrone",
+     "anchor_events": [
+      19
+     ],
+     "note": "Gewährleistungsklausel"
+    },
+    {
+     "type": "price_adjustment",
+     "effective_date": "2058-12-15",
+     "status": "signed",
+     "proposed_date": "2058-11-20",
+     "initiated_by": "cindervale",
+     "pct": -8,
+     "anchor_events": [
+      36
+     ]
+    },
+    {
+     "type": "suspension",
+     "effective_date": "2059-12-15",
+     "status": "signed",
+     "proposed_date": "2059-12-05",
+     "initiated_by": "eisenkrone",
+     "anchor_events": [
+      70
+     ],
+     "note": "Aussetzung bis zum Firmware-Audit; Kündigungsandrohung zum 2060-06-03 im Schreiben vom 2059-12-05"
+    }
+   ]
+  },
+  {
+   "number": "KHB-RV-2058-01",
+   "seller_key": "kuppelwerk",
+   "buyer_key": "pionierwerk",
+   "title": "Rahmenvertrag Habitatmodule Isolde",
+   "start_date": "2058-06-01",
+   "start_year": 2058,
+   "term_months": 36,
+   "base_volume_mcr": 70,
+   "price_formula": "cost_plus",
+   "indexation": "fuel_index",
+   "exclusivity": "seller_exclusive",
+   "notice_days": 180,
+   "scope": [
+    "industrial_goods"
+   ],
+   "exclusive_archetypes": [
+    "habitat_modules"
+   ],
+   "exclusivity_system": "isolde",
+   "cost_plus_pct": 10,
+   "amendments": [
+    {
+     "type": "volume_increase",
+     "effective_date": "2059-05-01",
+     "status": "signed",
+     "proposed_date": "2059-04-15",
+     "initiated_by": "pionierwerk",
+     "delta_mcr": 35,
+     "note": "zweite Ausbaustufe Serravel"
+    },
+    {
+     "type": "scope_extension",
+     "effective_date": "2059-10-01",
+     "status": "signed",
+     "proposed_date": "2059-09-10",
+     "initiated_by": "pionierwerk",
+     "system_code": "serravel",
+     "archetypes": [
+      "sinter_blocks"
+     ]
+    }
+   ]
+  },
+  {
+   "number": "KHB-RV-2059-01",
+   "seller_key": "kuppelwerk",
+   "buyer_key": "lichtacker",
+   "title": "Baustoffrahmen Verbundstahl und Habitatbaustoffe Tauvel/Myrrhen",
+   "start_date": "2059-04-01",
+   "start_year": 2059,
+   "term_months": 24,
+   "base_volume_mcr": 30,
+   "price_formula": "cost_plus",
+   "indexation": "fuel_index",
+   "exclusivity": "none",
+   "notice_days": 90,
+   "scope": [
+    "industrial_goods",
+    "raw_materials"
+   ],
+   "cost_plus_pct": 10,
+   "story": "folgt auf den Wegfall des Helix-Vorkaufsrechts (HMX-MSA-2057-01, 2059-03-15) und den Strafbescheid 653.162,16 CR",
+   "amendments": [
+    {
+     "type": "product_addition",
+     "effective_date": "2059-08-01",
+     "status": "signed",
+     "proposed_date": "2059-07-20",
+     "initiated_by": "kuppelwerk",
+     "archetypes": [
+      "habitat_modules"
+     ],
+     "anchor_events": [
+      53
+     ]
+    },
+    {
+     "type": "volume_increase",
+     "effective_date": "rule",
+     "status": "signed",
+     "rule": "cumulative_over_90pct"
+    },
+    {
+     "type": "exclusivity_clause",
+     "effective_date": "2060-02-01",
+     "status": "proposed",
+     "proposed_date": "2059-12-10",
+     "initiated_by": "kuppelwerk",
+     "exclusivity": "regional_exclusive",
+     "system_code": "myrrhen",
+     "archetypes": [
+      "sinter_blocks",
+      "habitat_modules"
+     ]
+    }
+   ]
+  },
+  {
+   "number": "EFF-MSA-2059-01",
+   "seller_key": "emberline",
+   "buyer_key": "corvane",
+   "title": "Helium-3 Supply Framework Halcyon Works VI",
+   "start_date": "2059-04-01",
+   "start_year": 2059,
+   "term_months": 24,
+   "base_volume_mcr": 40,
+   "price_formula": "index_linked",
+   "indexation": "fuel_index",
+   "exclusivity": "none",
+   "notice_days": 90,
+   "scope": [
+    "energy"
+   ],
+   "story": "direkt nach der Herausnahme von Helium-3 aus HMX-MSA-2057-02 (2059-03-15); Sturmzuschlag Pellora",
+   "amendments": [
+    {
+     "type": "force_majeure_clause",
+     "effective_date": "2059-09-15",
+     "status": "signed",
+     "proposed_date": "2059-09-05",
+     "initiated_by": "emberline",
+     "anchor_events": [
+      59
+     ]
+    },
+    {
+     "type": "volume_increase",
+     "effective_date": "rule",
+     "status": "signed",
+     "rule": "cumulative_over_90pct"
+    },
+    {
+     "type": "exclusivity_clause",
+     "effective_date": "2060-01-01",
+     "status": "proposed",
+     "proposed_date": "2059-12-05",
+     "initiated_by": "emberline",
+     "exclusivity": "buyer_exclusive",
+     "archetypes": [
+      "helium3"
+     ],
+     "system_code": "halcyon"
+    }
+   ]
+  },
+  {
+   "number": "EFF-MSA-2059-02",
+   "seller_key": "emberline",
+   "buyer_key": "lichtacker",
+   "title": "Energy Framework Agreement Agrarstation Seip",
+   "start_date": "2059-11-15",
+   "start_year": 2059,
+   "term_months": 24,
+   "base_volume_mcr": 18,
+   "price_formula": "index_linked",
+   "indexation": "fuel_index",
+   "exclusivity": "none",
+   "notice_days": 90,
+   "scope": [
+    "energy"
+   ],
+   "story": "Kette: EKM-VTR-2058-0099/-0105/-2059-0167 gebrochen -> Teilkündigung EKM-RV-2057-03 -> Emberline",
+   "amendments": [
+    {
+     "type": "exclusivity_clause",
+     "effective_date": "2060-01-18",
+     "status": "signed",
+     "proposed_date": "2059-11-15",
+     "initiated_by": "lichtacker",
+     "exclusivity": "right_of_first_refusal",
+     "categories": [
+      "energy"
+     ],
+     "system_code": "myrrhen",
+     "note": "kein Käuferexklusiv, weil HMX-CTR-2059-0257 (Helix, Plasmagas an Seip) bis 2060-03-30 läuft"
+    }
+   ]
+  },
+  {
+   "number": "RCS-MSA-2058-01",
+   "seller_key": "ravenmoor",
+   "buyer_key": "helix",
+   "title": "Escort & Frontier Supply Framework Kharon Corridor",
+   "start_date": "2058-08-01",
+   "start_year": 2058,
+   "term_months": 36,
+   "base_volume_mcr": 90,
+   "price_formula": "cost_plus",
+   "indexation": "risk_index",
+   "exclusivity": "regional_exclusive",
+   "notice_days": 90,
+   "scope": [
+    "industrial_goods",
+    "technology",
+    "medical",
+    "food"
+   ],
+   "cost_plus_pct": 15,
+   "escort_key": "ravenmoor",
+   "exclusive_archetypes": [
+    "escort_drones",
+    "sensor_arrays"
+   ],
+   "exclusivity_system": "kharon",
+   "story": "vom Gegner (Razzia 26, 2058-06-30) zum Schutzpartner",
+   "amendments": [
+    {
+     "type": "volume_increase",
+     "effective_date": "2059-06-15",
+     "status": "signed",
+     "proposed_date": "2059-06-05",
+     "initiated_by": "helix",
+     "delta_mcr": 40,
+     "anchor_events": [
+      51
+     ]
+    },
+    {
+     "type": "escort_clause",
+     "effective_date": "2060-02-01",
+     "status": "proposed",
+     "proposed_date": "2059-12-22",
+     "initiated_by": "ravenmoor",
+     "escort_key": "ravenmoor",
+     "anchor_events": [
+      74
+     ],
+     "linked_amendment": "EKM-RV-2057-02#escort_clause",
+     "note": "dreiseitig: Geleit auch für Eisenkrone-Konvois nach Kharon"
+    },
+    {
+     "type": "scope_extension",
+     "effective_date": "2060-01-15",
+     "status": "proposed",
+     "proposed_date": "2059-12-23",
+     "initiated_by": "helix",
+     "station": "Kharon Landing IV",
+     "anchor_events": [
+      74
+     ]
+    }
+   ]
+  },
+  {
+   "number": "RVF-RV-2058-01",
+   "seller_key": "raureif",
+   "buyer_key": "pionierwerk",
+   "title": "Versorgungsrahmen Isolde – Volatile",
+   "start_date": "2058-01-01",
+   "start_year": 2058,
+   "term_months": 36,
+   "base_volume_mcr": 80,
+   "price_formula": "index_linked",
+   "indexation": "fuel_index",
+   "exclusivity": "regional_exclusive",
+   "notice_days": 180,
+   "scope": [
+    "raw_materials",
+    "energy"
+   ],
+   "exclusive_archetypes": [
+    "water_ice",
+    "nitrogen_ice"
+   ],
+   "exclusivity_system": "isolde",
+   "amendments": [
+    {
+     "type": "product_addition",
+     "effective_date": "2058-09-01",
+     "status": "signed",
+     "proposed_date": "2058-08-15",
+     "initiated_by": "pionierwerk",
+     "archetypes": [
+      "nitrogen_ice"
+     ],
+     "note": "Terraforming beginnt; Stickstoffeis fällt ab hier unter die Exklusivität"
+    },
+    {
+     "type": "volume_increase",
+     "effective_date": "2059-06-01",
+     "status": "signed",
+     "proposed_date": "2059-05-15",
+     "initiated_by": "pionierwerk",
+     "delta_mcr": 30
+    },
+    {
+     "type": "price_adjustment",
+     "effective_date": "2060-01-01",
+     "status": "proposed",
+     "proposed_date": "2059-11-20",
+     "initiated_by": "raureif",
+     "pct": 10,
+     "note": "lange Wege, Piraterie"
+    }
+   ]
+  },
+  {
+   "number": "RVF-RV-2058-02",
+   "seller_key": "raureif",
+   "buyer_key": "eisenkrone",
+   "title": "Volatile-Liefervertrag Myrrhen/Brennus",
+   "start_date": "2058-03-01",
+   "start_year": 2058,
+   "term_months": 24,
+   "base_volume_mcr": 45,
+   "price_formula": "index_linked",
+   "indexation": "category_price_index",
+   "exclusivity": "none",
+   "notice_days": 90,
+   "scope": [
+    "raw_materials",
+    "energy"
+   ],
+   "price_index_category": "raw_materials",
+   "price_floor": true,
+   "amendments": [
+    {
+     "type": "price_adjustment",
+     "effective_date": "2059-08-01",
+     "status": "signed",
+     "proposed_date": "2059-07-25",
+     "initiated_by": "eisenkrone",
+     "pct": -6,
+     "anchor_events": [
+      52
+     ],
+     "note": "Eisenkrone verweist auf den Fund 52 bei Feldspat"
+    },
+    {
+     "type": "term_extension",
+     "effective_date": "2060-02-29",
+     "status": "proposed",
+     "proposed_date": "2059-12-15",
+     "new_end_date": "2061-02-28",
+     "initiated_by": "eisenkrone"
+    }
+   ]
+  },
+  {
+   "number": "OSP-MSA-2058-01",
+   "seller_key": "outmark",
+   "buyer_key": "pionierwerk",
+   "title": "Survey Data License Framework Serravel/Isolde",
+   "start_date": "2058-02-01",
+   "start_year": 2058,
+   "term_months": 36,
+   "base_volume_mcr": 25,
+   "price_formula": "fixed",
+   "indexation": "none",
+   "exclusivity": "none",
+   "notice_days": 180,
+   "scope": [
+    "technology",
+    "raw_materials"
+   ],
+   "amendments": [
+    {
+     "type": "exclusivity_clause",
+     "effective_date": "2059-08-15",
+     "status": "signed",
+     "proposed_date": "2059-07-30",
+     "initiated_by": "pionierwerk",
+     "exclusivity": "regional_exclusive",
+     "system_code": "serravel",
+     "archetypes": [
+      "survey_charts"
+     ],
+     "anchor_events": [
+      52
+     ]
+    },
+    {
+     "type": "product_addition",
+     "effective_date": "2059-11-01",
+     "status": "signed",
+     "archetypes": [
+      "terraforming_cultures"
+     ],
+     "condition": "nur wenn der Archetyp im Outmark-Produktpool liegt"
+    }
+   ]
+  },
+  {
+   "number": "SGM-RV-2059-01",
+   "seller_key": "morgengrund",
+   "buyer_key": "pionierwerk",
+   "title": "Versorgungsrahmen Isolde – Lebensmittel für Bautrupps",
+   "start_date": "2059-01-01",
+   "start_year": 2059,
+   "term_months": 12,
+   "base_volume_mcr": 5,
+   "price_formula": "fixed",
+   "indexation": "none",
+   "exclusivity": "none",
+   "notice_days": 60,
+   "scope": [
+    "food"
+   ],
+   "auto_renewal": true,
+   "renewal_months": 12,
+   "harvest_clause": true,
+   "amendments": [
+    {
+     "type": "volume_increase",
+     "effective_date": "2059-07-01",
+     "status": "signed",
+     "proposed_date": "2059-06-15",
+     "initiated_by": "pionierwerk",
+     "delta_mcr": 2
+    },
+    {
+     "type": "term_extension",
+     "effective_date": "2060-01-01",
+     "status": "signed",
+     "new_end_date": "2060-12-31",
+     "note": "automatische Verlängerung um 12 Monate"
+    }
+   ]
+  },
+  {
+   "number": "SGM-RV-2059-02",
+   "seller_key": "morgengrund",
+   "buyer_key": "ravenmoor",
+   "title": "Garnisonsrationen Kharon und Brennus",
+   "start_date": "2059-03-01",
+   "start_year": 2059,
+   "term_months": 12,
+   "base_volume_mcr": 6,
+   "price_formula": "fixed",
+   "indexation": "none",
+   "exclusivity": "none",
+   "notice_days": 60,
+   "scope": [
+    "food"
+   ],
+   "story": "schließt die Nahrungslücke Kharon (0 Angebote bei 20 Nachfragen)",
+   "amendments": [
+    {
+     "type": "force_majeure_clause",
+     "effective_date": "2059-03-01",
+     "status": "signed",
+     "proposed_date": "2059-02-15",
+     "initiated_by": "morgengrund",
+     "note": "Ernteausfallklausel; Vorbild sind die Ernteausfälle bei Lichtacker (Ereignisse 61, 71)"
+    },
+    {
+     "type": "term_extension",
+     "effective_date": "2060-02-29",
+     "status": "proposed",
+     "proposed_date": "2059-12-20",
+     "new_end_date": "2061-02-28",
+     "initiated_by": "ravenmoor"
+    }
+   ]
+  }
+ ],
+ "correspondence_design": {
+  "table": "correspondence",
+  "reference_number": "{SKU Absender}-KOR-{Jahr}-{nnnnn} (de_DE) / {SKU Absender}-COR-{Jahr}-{nnnnn} (en_US)",
+  "fields": {
+   "correspondence_id": "INTEGER PRIMARY KEY",
+   "reference_number": "TEXT NOT NULL UNIQUE",
+   "letter_type": "TEXT NOT NULL (Enum letter_types)",
+   "thread_id": "INTEGER NOT NULL -> correspondence (erstes Schreiben des Vorgangs, bei diesem = eigene ID)",
+   "in_reply_to_id": "INTEGER -> correspondence",
+   "refers_to_correspondence_id": "INTEGER -> correspondence (Quelle eines Lecks/Gerüchts)",
+   "sent_at": "TEXT NOT NULL (<= 2059-12-31T23:59:59)",
+   "read_at": "TEXT (NULL = ungelesen zum Stichtag)",
+   "sender_company_id": "INTEGER NOT NULL -> companies",
+   "sender_employee_id": "INTEGER -> employees (NULL nur bei anonymem rumor)",
+   "sender_station_id": "INTEGER -> stations",
+   "recipient_company_id": "INTEGER -> companies",
+   "recipient_employee_id": "INTEGER -> employees",
+   "recipient_customer_id": "INTEGER -> customers (Mahnung/Avis an Nicht-Firmenkunden)",
+   "language": "TEXT NOT NULL ('de_DE','en_US'), Sprache der Absenderfirma",
+   "subject": "TEXT NOT NULL",
+   "body": "TEXT NOT NULL",
+   "confidentiality": "TEXT NOT NULL ('public','business','confidential','secret') = mindestens intel_access_level 0/1/2/3",
+   "tone": "TEXT NOT NULL ('cordial','neutral','firm','hostile')",
+   "amount": "REAL >= 0 (Forderung, Strafe, Angebotswert in CR)",
+   "due_date": "TEXT",
+   "response_required": "INTEGER 0/1",
+   "status": "TEXT NOT NULL ('sent','read','answered','rejected','escalated','closed')",
+   "trust_effect": "INTEGER -20..10 (beschreibend)",
+   "is_accurate": "INTEGER NULL/0/1, nur confidential_tip und rumor (NULL = offen)",
+   "intel_value": "INTEGER 0..100 (Preis für den Spieler)",
+   "leak_status": "TEXT NOT NULL DEFAULT 'none' ('none','rumored','leaked')",
+   "leaked_by_employee_id": "INTEGER -> employees",
+   "leaked_to_company_id": "INTEGER -> companies",
+   "partnership_id": "INTEGER -> trade_partnerships",
+   "framework_agreement_id": "INTEGER -> framework_agreements",
+   "amendment_id": "INTEGER -> framework_amendments",
+   "contract_id": "INTEGER -> contracts",
+   "order_id": "INTEGER -> orders",
+   "shipment_id": "INTEGER -> shipments",
+   "event_id": "INTEGER -> events",
+   "rivalry_id": "INTEGER -> company_rivalries"
+  },
+  "checks": [
+   "recipient_company_id IS NOT NULL OR recipient_customer_id IS NOT NULL",
+   "sender_company_id <> recipient_company_id OR letter_type = 'internal_memo'",
+   "(is_accurate IS NOT NULL) -> letter_type IN ('confidential_tip','rumor')"
+  ],
+  "letter_types": [
+   "inquiry",
+   "offer",
+   "counter_offer",
+   "offer_rejection",
+   "contract_confirmation",
+   "amendment_offer",
+   "amendment_confirmation",
+   "amendment_rejection",
+   "delivery_notice",
+   "delay_notice",
+   "delay_complaint",
+   "penalty_notice",
+   "payment_reminder",
+   "breach_warning",
+   "termination_notice",
+   "suspension_notice",
+   "protest",
+   "confidential_tip",
+   "rumor",
+   "internal_memo"
+  ],
+  "mapping_from_proposals": {
+   "quotation (A)": "offer",
+   "negotiation (A)": "counter_offer",
+   "amendment_acceptance (A)": "amendment_confirmation",
+   "source_correspondence_id (A)": "refers_to_correspondence_id",
+   "rumor_reliability (A)": "is_accurate (confirmed=1, false=0, plausible=NULL)",
+   "BRF/LTR (A)": "KOR/COR (B)"
+  },
+  "triggers": {
+   "inquiry": "Rahmenvertrag 30–60 Tage vor Beginn; Nachtragswunsch des Käufers; Lücke im Angebot",
+   "offer": "Antwort auf inquiry (+3..10 T); Kaltangebot ohne Partnerschaft",
+   "counter_offer": "0–2 Runden, 2 bei trust_level < 60",
+   "offer_rejection": "Absage auf offer oder auf einen Vertragsentwurf (status draft)",
+   "contract_confirmation": "Unterschrift Rahmenvertrag (Vorstände); jeder Partnervertrag vom Typ exclusive_supply (Partnerbetreuung)",
+   "amendment_offer": "jeder Nachtrag, am proposed_date, vom Initiator",
+   "amendment_confirmation": "Nachtrag signed (Gegenseite, effective −7..0 T, nie nach dem Stichtag)",
+   "amendment_rejection": "Nachtrag rejected",
+   "delivery_notice": "Abrufsendung >= 1 Mio. CR und offene Bestellungen zum Stichtag (Abflug)",
+   "delay_notice": "Partnersendung mit risk_incident (geplante Ankunft)",
+   "delay_complaint": "Abruf > 48 h verspätet oder Vertrag breached oder Bestellung zum Stichtag delayed (Ankunft +0..3 T)",
+   "penalty_notice": "Vertrag breached; amount = late_days × penalty_per_day wie generate_financials (letzte Ankunft +3..14 T)",
+   "payment_reminder": "payment_status overdue; Fälligkeit = Ankunft + PAYMENT_TERMS_DAYS; Stufen Fälligkeit +3..7 / +21 / +45 T, nur bis Stichtag",
+   "breach_warning": "Verstoß gegen Exklusivität/Vorkaufsrecht/Gewährleistung (auch vom Generator gefundene Verstöße)",
+   "termination_notice": "Nachtrag partial_termination; Ende historischer Partnerschaft; Vertrag cancelled; Kündigungsandrohung",
+   "suspension_notice": "Nachtrag suspension",
+   "protest": "Razzia, Claim-Streit (Vorstand an Vorstand des Rivalen)",
+   "confidential_tip": "Mitarbeiter mit Bestechlichkeit >= 70 oder greedy/talkative verrät Wissen an einen Rivalen",
+   "rumor": "wie confidential_tip, Wahrheitsgehalt offen; Quelle über refers_to_correspondence_id",
+   "internal_memo": "Ereignis an eigener Station mit Bezug zu Partner/Rivale; Strafe > 250.000 CR"
+  },
+  "roles": {
+   "sender_selection": "Mitarbeiter muss am sent_at beschäftigt sein (hire_date <= sent_at < termination_date); Ersatzreihenfolge executive -> relations -> station_manager",
+   "executive_required": "Rahmenvertrag, Kündigung, Aussetzung, Strafbescheid > 250.000 CR",
+   "finance": "Mahnung, Strafbescheid <= 250.000 CR",
+   "logistics_or_station_manager": "delivery_notice, delay_notice (Herkunftsstation)",
+   "station_manager_destination": "delay_complaint",
+   "known_gaps": "Feldspat hat vor 2057-11-22 und Eisenkrone vor 2059-07-07 keinen Vorstand: dann zeichnen Mikhail Gotthard (2) bzw. Esther Bauer (170)"
+  },
+  "espionage": {
+   "leak_probability": "espionage_risk/100 × bribe_susceptibility/100 × (1 − loyalty/150)",
+   "leaker_pool": "aktive Mitarbeiter der Absenderfirma mit intel_access_level >= Stufe der confidentiality",
+   "truth_split": {
+    "is_accurate_1": 0.3,
+    "is_accurate_null": 0.5,
+    "is_accurate_0": 0.2
+   }
+  },
+  "links": [
+   "thread_id/in_reply_to_id bilden den Vorgang",
+   "Fachbezug über genau die vorhandenen Schlüssel (contract_id, order_id, shipment_id, event_id, rivalry_id, partnership_id, framework_agreement_id, amendment_id)",
+   "Parteien von Vertrag/Bestellung/Rahmen = {Absenderfirma, Empfängerfirma}, außer confidential_tip, rumor, internal_memo, protest"
+  ],
+  "random_stream": "random.Random(f'{seed}:correspondence'); für Bestandsfirmen nur vorhandene Mitarbeiter",
+  "estimated_volume": {
+   "bestand_objects": 850,
+   "all_18_companies": "2.200–2.800"
+  },
+  "qa": [
+   "Absender/Empfänger gehören zur Firma und sind am sent_at beschäftigt",
+   "Kontext passt zu den Parteien",
+   "penalty_notice.amount = late_days × penalty_per_day; Summe je Firma und Monat = company_financials.contract_penalties",
+   "delay_complaint nur bei echter Verspätung oder Status delayed",
+   "Antworten nach dem Bezugsschreiben, alle sent_at < 2060-01-01",
+   "language = Sprache der Absenderfirma; is_accurate nur bei confidential_tip/rumor",
+   "jeder rumor/confidential_tip mit Leck-Mitarbeiter: bribe_susceptibility >= 50 oder loyalty <= 50"
+  ],
+  "anchored_threads": "siehe phase2_entscheidung.md, Abschnitt 6.3 (verbindliche Liste mit echten IDs)"
+ }
+}
